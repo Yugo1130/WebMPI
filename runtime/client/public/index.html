@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>WebMPI</title>
+</head>
+
+<body>
+    <input type="text" id="args">
+    <button id="run">実行</button>
+    <pre id="output"></pre>
+
+    <script>
+        const output = document.getElementById("output");
+        const runBtn = document.getElementById("run");
+
+        runBtn.addEventListener("click", () => {
+            const input = document.getElementById("args").value;
+
+            // スペースで区切って配列に変換（空要素除去）
+            const args = input.trim().split(/\s+/);
+
+            const worker = new Worker("../src/worker/worker.js");
+
+            worker.onmessage = (e) => {
+                output.textContent += e.data + "\n";
+                worker.terminate(); // 処理が終わったらworker終了
+            };
+
+            worker.postMessage(args); // 引数を渡す
+        });
+    </script>
+</body>
+
+</html>
