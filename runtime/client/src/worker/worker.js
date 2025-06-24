@@ -5,8 +5,8 @@ onmessage = (e) => {
         arguments: args, // mainに渡す引数
         locateFile: (path) => {
             if (path.endsWith(".wasm")) {
-                // sample.js と sample.wasm は /client/wasm/build/ にある
-                return "/client/wasm/build/" + path;
+                // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
+                return "/runtime/client/wasm/build/" + path;
             }
             return path;
         },
