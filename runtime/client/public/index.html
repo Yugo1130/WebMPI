@@ -25,7 +25,9 @@
 
             worker.onmessage = (e) => {
                 output.textContent += e.data + "\n";
-                worker.terminate(); // 処理が終わったらworker終了
+                // ここに組み込むと出力が一回しかできなくなる．
+                // MPI_Finalize()の動作内に組み込むべき
+                // worker.terminate(); // 処理が終わったらworker終了
             };
 
             worker.postMessage(args); // 引数を渡す
