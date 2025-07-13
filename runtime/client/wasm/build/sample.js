@@ -1640,6 +1640,7 @@ var wasmExports;
 createWasm();
 var ___wasm_call_ctors = createExportWrapper('__wasm_call_ctors', 0);
 var _main = Module['_main'] = createExportWrapper('__main_argc_argv', 2);
+var _mpi_internal_init_world_comm = Module['_mpi_internal_init_world_comm'] = createExportWrapper('mpi_internal_init_world_comm', 2);
 var _fflush = createExportWrapper('fflush', 1);
 var ___funcs_on_exit = createExportWrapper('__funcs_on_exit', 0);
 var _strerror = createExportWrapper('strerror', 1);

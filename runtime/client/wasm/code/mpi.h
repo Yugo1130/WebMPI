@@ -50,7 +50,7 @@ int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, M
 int MPI_Finalize(void);
 
 // その他定数
-// @todo エラーコードの定義
+// TODO エラーコードの定義
 // https://learn.microsoft.com/ja-jp/message-passing-interface/mpi-error
 
 #define MPI_SUCCESS 0
