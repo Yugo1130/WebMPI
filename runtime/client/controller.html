@@ -9,14 +9,14 @@
 <body>
     <div id="main">
         <input type="text" id="args"><br>
-        <label for="num">プロセス数:</label>
+        <label for="num">Number of processes:</label>
         <input type="number" id="np" name="np" min="1" step="1" value="2"><br>
         <table id="nodeTable" border="1">
             <thead>
                 <tr>
-                    <th>#</th>
-                    <th>IPアドレス</th>
-                    <th>slots</th>
+                    <th>Client ID</th>
+                    <th>IP Address</th>
+                    <th>Max Processes</th>
                 </tr>
             </thead>
             <tbody></tbody>
@@ -25,11 +25,10 @@
         <pre id="output"></pre>
     </div>
     <div id="error" style="display: none;">
-        このネットワークにはすでに別のコントローラが接続されています．<br>
-        同時に複数のコントローラを使用することはできません．
+        Another controller was attached to this mpi cluster.<br>
     </div>
 
-    <script type="module" src="../src/router/controller.js"></script>
+    <script type="module" src="/src/router/controller.js"></script>
 </body>
 
 </html>

@@ -37,19 +37,18 @@ function getParticipantWsById(clientId) {
 wss_controller.on("connection", (ws) => {
     // controllerの複数起動を阻止
     if (controllers.length >= 1) {
-        ws.send(JSON.stringify({
-            type: "error",
+        controllers[0].send(JSON.stringify({
+            type: "multiple-controllers-error",
         }));
-        ws.close(); // 切断
-        return;
+        controllers[0].close();
     }
     ws.clientId = "controller"
-    controllers.push(ws);
+    controllers[0] = ws;
     clientListToController();
-    
+
     ws.on("message", (msg) => {
         const data = JSON.parse(msg);
-        
+
         // TODO participantにも送るようにする
         if (data.type === "request_spawn") {
             let rank = 0;
@@ -59,6 +58,7 @@ wss_controller.on("connection", (ws) => {
             const args = data.args;
             const nodes = data.nodes;
 
+            let avaiableSlots = worldSize;
             for (const node of nodes) {
                 ws = getParticipantWsById(node.id);
                 if (!ws) {
@@ -66,15 +66,29 @@ wss_controller.on("connection", (ws) => {
                     continue;
                 }
                 ws.slots = node.slots;
-                ws.assignedCont = 0;
+                if (ws.slots == -1) {
+                    avaiableSlots = 0;
+                }
+                else {
+                    avaiableSlots -= ws.slots;
+                }
+                console.log(`${ws.clientId}：${ws.slots}`);
+                ws.assignedCount = 0;
                 clients.push(ws);
+            }
+            if (avaiableSlots > 0) {
+                console.warn("insufficient-slots-error");
+                controllers[0].send(JSON.stringify({
+                    type: "insufficient-slots-error",
+                }));
+                return;
             }
 
             while (rank < worldSize) {
                 // let assigned = false;
                 for (const ws of clients) {
                     if (rank >= worldSize) break; // worldSize超えたら割り当て終了
-                    if (ws.slots !== -1 && ws._assignedCount >= ws.slots) continue; //slotsの上限を超えたらcontinue
+                    if (ws.slots !== -1 && ws.assignedCount >= ws.slots) continue; //slotsの上限を超えたらcontinue
                     rankInfos.push({ rank, clientId: ws.clientId, ip: ws._socket.remoteAddress.replace(/^::ffff:/, "") });
                     ws.assignedCount++;
                     rank++;
@@ -96,6 +110,7 @@ wss_controller.on("connection", (ws) => {
     ws.on("close", () => {
         // 接続終了時，クライアントをcontroller配列から削除する．
         const index = controllers.indexOf(ws);
+        console.log(index);
         if (index !== -1) {
             controllers.splice(index, 1);
         }

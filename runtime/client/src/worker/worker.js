@@ -1,28 +1,32 @@
 onmessage = (e) => {
     const type = e.data.type;
-    const rank = e.data.rank;
-    const size = e.data.size;
     if (type == "init") {
-
         self.Module = {
-            arguments: e.data.args, // mainに渡す引数
+            arguments: e.data.args, // mainに渡す引数（argc, argv）
+            rank: e.data.rank,
+            size: e.data.size,
             locateFile: (path) => {
                 if (path.endsWith(".wasm")) {
                     // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
-                    return "/runtime/client/wasm/build/" + path;
+                    // REVIEW wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．しかし本当に動いてるか不明．
+                    return "/wasm/" + path + "?v=" + Date.now();
                 }
                 return path;
             },
-            print: (text) => postMessage(text), // printfの出力先
-            printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
+            // print: (text) => postMessage(text), // printfの出力先
+            // printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
+            print: (text) => postMessage({
+                // printfの出力先
+                type: "standard-output",
+                text,
+            }), 
+            printErr: (text) => postMessage({
+                //fprintfの出力先
+                type: "standard-error-output",
+                text,
+            }),
             // 初期化後に呼ばれる関数
-            onRuntimeInitialized: () => {
-                if (typeof Module._mpi_internal_init_world_comm === "function") {
-                    Module._mpi_internal_init_world_comm(rank, size);
-                } else {
-                    postMessage("[ERR] mpi_internal_init_world_comm not found");
-                }
-            }
+            onRuntimeInitialized: () => {}
         };
 
         // 通常モード（MODULARIZE=0）なら sample.js 読み込み時に自動で Module を使う
@@ -30,6 +34,6 @@ onmessage = (e) => {
 
         // em++で生成したJSランタイム
         // 初期化処理やロード処理を行う．
-        importScripts("../../wasm/build/sample.js");
+        importScripts("/wasm/sample.js?v=" + Date.now());
     }
 };
