@@ -1628,18 +1628,28 @@ unexportedSymbols.forEach(unexportedRuntimeSymbol);
 function checkIncomingModuleAPI() {
   ignoredModuleProp('fetchSettings');
 }
+function js_call_init_comm() { if (typeof Module._mpi_internal_init_world_comm === "function") { Module._mpi_internal_init_world_comm(Module.rank, Module.size); } else { console.error("[ERR] mpi_internal_init_world_comm not found"); } }
+function js_mpi_send(ptr,count,datatypeId,dest,tag,commId,size) { const buf = HEAPU8.slice(ptr, ptr + size); postMessage({ type: "mpi-send", count, datatypeId, dest, tag, commId, payload: buf, }); }
+function js_mpi_recv_request(source,tag,commId) { postMessage({ type: "mpi-recv-request", source, tag, commId, }); }
 var wasmImports = {
   /** @export */
   fd_close: _fd_close,
   /** @export */
   fd_seek: _fd_seek,
   /** @export */
-  fd_write: _fd_write
+  fd_write: _fd_write,
+  /** @export */
+  js_call_init_comm,
+  /** @export */
+  js_mpi_recv_request,
+  /** @export */
+  js_mpi_send
 };
 var wasmExports;
 createWasm();
 var ___wasm_call_ctors = createExportWrapper('__wasm_call_ctors', 0);
 var _main = Module['_main'] = createExportWrapper('__main_argc_argv', 2);
+var _mpi_internal_init_world_comm = Module['_mpi_internal_init_world_comm'] = createExportWrapper('mpi_internal_init_world_comm', 2);
 var _fflush = createExportWrapper('fflush', 1);
 var ___funcs_on_exit = createExportWrapper('__funcs_on_exit', 0);
 var _strerror = createExportWrapper('strerror', 1);

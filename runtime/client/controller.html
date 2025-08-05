@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>WebMPI Controller</title>
+</head>
+
+<body>
+    <div id="main">
+        <input type="text" id="args"><br>
+        <label for="num">Number of processes:</label>
+        <input type="number" id="np" name="np" min="1" step="1" value="2"><br>
+        <table id="nodeTable" border="1">
+            <thead>
+                <tr>
+                    <th>Client ID</th>
+                    <th>IP Address</th>
+                    <th>Max Processes</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <button id="run">実行</button>
+        <pre id="output"></pre>
+    </div>
+    <div id="error" style="display: none;">
+        Another controller was attached to this mpi cluster.<br>
+    </div>
+
+    <script type="module" src="/src/router/controller.js"></script>
+</body>
+
+</html>

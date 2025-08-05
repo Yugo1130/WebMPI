@@ -1,24 +1,39 @@
 onmessage = (e) => {
-    const args = e.data.map(String); // 念のため全て文字列化
+    const type = e.data.type;
+    if (type == "init") {
+        self.Module = {
+            arguments: e.data.args, // mainに渡す引数（argc, argv）
+            rank: e.data.rank,
+            size: e.data.size,
+            locateFile: (path) => {
+                if (path.endsWith(".wasm")) {
+                    // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
+                    // REVIEW wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．しかし本当に動いてるか不明．
+                    return "/wasm/" + path + "?v=" + Date.now();
+                }
+                return path;
+            },
+            // print: (text) => postMessage(text), // printfの出力先
+            // printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
+            print: (text) => postMessage({
+                // printfの出力先
+                type: "standard-output",
+                text,
+            }), 
+            printErr: (text) => postMessage({
+                //fprintfの出力先
+                type: "standard-error-output",
+                text,
+            }),
+            // 初期化後に呼ばれる関数
+            onRuntimeInitialized: () => {}
+        };
 
-    self.Module = {
-        arguments: args, // mainに渡す引数
-        locateFile: (path) => {
-            if (path.endsWith(".wasm")) {
-                // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
-                return "/runtime/client/wasm/build/" + path;
-            }
-            return path;
-        },
-        print: (text) => postMessage(text), // pritfの出力先
-        printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
-        onRuntimeInitialized: () => { } //初期化後に呼ばれる関数（？）
-    };
+        // 通常モード（MODULARIZE=0）なら sample.js 読み込み時に自動で Module を使う
+        // MODULARIZE=1 でビルドした場合は Module() を呼び出す必要あり
 
-    // 通常モード（MODULARIZE=0）なら sample.js 読み込み時に自動で Module を使う
-    // MODULARIZE=1 でビルドした場合は Module() を呼び出す必要あり
-
-    // em++で生成したJSランタイム
-    // 初期化処理やロード処理を行う．
-    importScripts("../../wasm/build/sample.js");
+        // em++で生成したJSランタイム
+        // 初期化処理やロード処理を行う．
+        importScripts("/wasm/sample.js?v=" + Date.now());
+    }
 };
