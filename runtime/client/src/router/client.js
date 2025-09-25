@@ -1,10 +1,11 @@
 import { sendMpiMessage } from "./router.js";
+import { requsetMpiMessage } from "./router.js";
 
 export let rankToClientId; // rankが割り振られたclientIdを導出
 export let clientIdToRanks; // clientIdに割り振られたrank（複数）を導出
 export let rankToWorker; // rankに対応するworkerを導出
 
-export function handleSpawnInfo(data, clientId, outputElement) {
+export function handleSpawnInfo(data, clientId, output, output_info) {
     rankToClientId = {};
     clientIdToRanks = {};
     rankToWorker = {};
@@ -19,15 +20,13 @@ export function handleSpawnInfo(data, clientId, outputElement) {
     }
 
     if (clientId === "controller") {
-        outputElement.textContent += "\n----------------------------------------\n";
         for (const id in clientIdToRanks) {
-            outputElement.textContent += `[clientId: ${id}] Allocated Process ID: ${clientIdToRanks[id]}\n`
+            output_info.textContent += `[${id}] Allocated Process ID: ${clientIdToRanks[id]}\n`;
         }
-        outputElement.textContent += `\n`;
     } else {
-        outputElement.textContent += "\n----------------------------------------\nAllocated Process ID："
-        outputElement.textContent += clientIdToRanks[clientId] || [];
-        outputElement.textContent += `\n\n`;
+        output_info.textContent += "Allocated Process ID：";
+        output_info.textContent += clientIdToRanks[clientId] || [];
+        output_info.textContent += "\n";
     }
 
     for (const rank of clientIdToRanks[clientId] || []) { // undefinedだとエラーが発生するためデフォルト空配列を使用
@@ -38,10 +37,10 @@ export function handleSpawnInfo(data, clientId, outputElement) {
         worker.onmessage = (e) => {
             switch (e.data.type) {
                 case "standard-output":
-                    outputElement.textContent += `[rank ${rank}]: ${e.data.text}\n`;
+                    output.textContent += `[rank ${rank}]: ${e.data.text}\n`;
                     break;
                 case "standard-error-output":
-                    outputElement.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
+                    output.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
                     break;
                 case "mpi-send":
                     sendMpiMessage(e.data, rank);

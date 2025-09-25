@@ -5,18 +5,18 @@ const messageQueue = [];
 const requestQueue = [];
 
 export function sendMpiMessage(data, source) {
-    // 送信先が同じclientの場合
     const destClientId = rankToClientId[data.dest];
     const sourceClientId = rankToClientId[source]
+    // 送信元と送信先が同一clientの場合
     if (destClientId === sourceClientId) {
         const matchedMsgIndex = requestQueue.findIndex(msg =>
-            (msg.source === data.source || msg.source === null) &&
-            (msg.tag === data.tag || msg.tag === null) &&
-            msg.commId === data.commId
+            msg.dest === data.dest && // 送信先が同じ
+            (msg.source === data.source || msg.source === null) && // 送信元が同じがMPI_ANY_SOURCE
+            (msg.tag === data.tag || msg.tag === null) && // タグが同じかMPI_ANY_TAG
+            msg.commId === data.commId // コミュニケータが同じ
         );
+        // リクエスト待ちの場合はメッセージキューに格納
         if (matchedMsgIndex !== -1) {
-            // console.log("送信先が同じ");
-            // 送信先ごとにキューを管理
             messageQueue.push({
                 source,
                 dest: data.dest,
@@ -36,10 +36,9 @@ export function sendMpiMessage(data, source) {
 
 export function requsetMpiMessage(data, dest) {
     requestQueue.push({
-        source: data.source,
         dest,
+        source: data.source,
         tag: data.tag,
         commId: data.commId
-        // destは？
     });
 }

@@ -1,4 +1,3 @@
-// router.js
 import { handleSpawnInfo } from "./client.js";
 
 const argsInput = document.getElementById("args");
@@ -6,6 +5,7 @@ const np = document.getElementById("np");
 const runBtn = document.getElementById("run");
 const nodeTable = document.getElementById("nodeTable").querySelector("tbody");
 const output = document.getElementById("output");
+const output_info = document.getElementById("output_info");
 const mainDiv = document.getElementById("main");
 const errorDiv = document.getElementById("error");
 
@@ -48,7 +48,7 @@ socket.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === "spawn_info") {
-        handleSpawnInfo(data, clientId, output);
+        handleSpawnInfo(data, clientId, output, output_info);
     }
     if (data.type === "client_list") {
         // 毎回クリアして更新
@@ -69,7 +69,7 @@ socket.onmessage = (event) => {
         errorDiv.style.display = "block";
     }
     if (data.type === "insufficient-slots-error") {
-        output.textContent += "WARNING: プロセス数が合計割当可能数を上回っています．\n"
+        output_info.textContent += "WARNING: プロセス数が合計割当可能数を上回っています．\n"
     }
 
 };

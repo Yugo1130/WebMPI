@@ -2,33 +2,56 @@
 <html lang="ja">
 
 <head>
-    <meta charset="UTF-8">
-    <title>WebMPI Controller</title>
+  <meta charset="UTF-8">
+  <title>WebMPI Controller</title>
+  <!-- HACK: CDN版のため後程ビルド版に移行 -->
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 
-<body>
-    <div id="main">
-        <input type="text" id="args"><br>
-        <label for="num">Number of processes:</label>
-        <input type="number" id="np" name="np" min="1" step="1" value="2"><br>
-        <table id="nodeTable" border="1">
-            <thead>
-                <tr>
-                    <th>Client ID</th>
-                    <th>IP Address</th>
-                    <th>Max Processes</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
-        <button id="run">実行</button>
-        <pre id="output"></pre>
-    </div>
-    <div id="error" style="display: none;">
-        Another controller was attached to this mpi cluster.<br>
-    </div>
+<body class="bg-gray-100 text-gray-800">
+  <div id="main" class="max-w-3xl mx-auto mt-10 p-6 bg-white shadow-lg rounded-lg">
+    <h1 class="text-2xl font-bold mb-6">WebMPI Controller</h1>
 
-    <script type="module" src="/src/router/controller.js"></script>
+    <div class="space-y-4">
+      <label class="block">
+        <span class="font-semibold">Arguments:</span>
+        <input type="text" id="args" 
+          class="mt-1 block w-full rounded-md border border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200" />
+      </label>
+
+      <label class="block">
+        <span class="font-semibold">Number of processes:</span>
+        <input type="number" id="np" name="np" min="1" step="1" value="2"
+          class="mt-1 block w-32 rounded-md border border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-200" />
+      </label>
+
+      <div class="overflow-x-auto">
+        <table id="nodeTable" class="min-w-full border border-gray-300 rounded-lg">
+          <thead class="bg-gray-200 text-gray-700">
+            <tr>
+              <th class="px-4 py-2 text-left">Client ID</th>
+              <th class="px-4 py-2 text-left">IP Address</th>
+              <th class="px-4 py-2 text-left">Max Processes</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-200"></tbody>
+        </table>
+      </div>
+
+      <button id="run"
+        class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring focus:ring-blue-300">
+        Run
+      </button>
+      <pre id="output_info" class="bg-gray-300 p-4 rounded-md overflow-x-auto"></pre>
+      <pre id="output" class="bg-gray-900 text-green-400 p-4 rounded-md overflow-x-auto"></pre>
+    </div>
+  </div>
+
+  <div id="error" class="hidden max-w-3xl mx-auto mt-6 p-4 bg-red-100 text-red-800 rounded-lg">
+    Another controller was attached to this mpi cluster.
+  </div>
+
+  <script type="module" src="/src/router/controller.js"></script>
 </body>
 
 </html>
