@@ -69,6 +69,9 @@ typedef struct _MPI_Status {
 #define MPI_ERR_ASSERT 53
 #define MPI_ERR_LASTCODE 0x3fffffff
 
+#define MPI_ANY_SOURCE -1
+#define MPI_ANY_TAG -1
+
 typedef enum _MPI_Datatype { 
     MPI_CHAR           = 0x4c000101,
     MPI_UNSIGNED_CHAR  = 0x4c000102,
@@ -105,7 +108,9 @@ int MPI_Init(int *argc, char ***argv);
 int MPI_Comm_size(MPI_Comm comm, int *size);
 int MPI_Comm_rank(MPI_Comm comm, int *rank);
 int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
+int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
 int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm);
+int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm);
 int MPI_Finalize(void);
 
 // その他定数

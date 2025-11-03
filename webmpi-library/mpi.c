@@ -50,7 +50,7 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank) {
 }
 
 // OPTIMIZE postmessageからarraybufferもしくはsharedarraybufferに変えるべき．
-EM_JS(void, js_mpi_send, (int ptr, int count, int datatypeId, int dest, int tag, int commId, int size), {
+EM_JS(void, js_mpi_isend, (int ptr, int count, int datatypeId, int dest, int tag, int commId, int size), {
     const buf = HEAPU8.slice(ptr, ptr + size);
     postMessage({
         type: "mpi-send",
@@ -63,26 +63,55 @@ EM_JS(void, js_mpi_send, (int ptr, int count, int datatypeId, int dest, int tag,
     });
 });
 
-int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
-    int bytes = count * mpi_get_size(datatype);
+int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
+    int size = count * mpi_get_size(datatype);
     int datatypeId = mpi_get_id(datatype);
     int ptr = (int)(buf);  // wasm上のアドレスを取得
-    js_mpi_send(ptr, count, datatypeId, dest, tag, comm.commId, bytes);
+    js_mpi_isend(ptr, count, datatypeId, dest, tag, comm.commId, size);
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_recv_request, (int source, int tag, int commId), {
+EM_JS(void, js_mpi_recv, (int ptr, int src, int tag, int commId), {
+    const sab = Module.eagerSab;
+    const HEADER_SIZE = Module.HEADER_SIZE;
+    const PAYLOAD_SIZE = Module.PAYLOAD_SIZE;
+
+    const ctlView = new Int32Array(sab, 0, 1);
+    const lenView = new Int32Array(sab, 4, 1);
+    const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE);
+
+    const EMPTY = 0;
+    const FULL = 1;
+
     postMessage({
-        type: "mpi-recv-request",
-        source,
+        type: "mpi-recv",
+        src,
         tag,
         commId,
     });
+
+    console.log("待機中:", Atomics.load(ctlView, 0));
+
+    // 受信完了まで待機
+    Atomics.wait(ctlView, 0, EMPTY);
+
+    console.log("再開:", Atomics.load(ctlView, 0));
+
+    // 受信データ長を取得
+    const len = Atomics.load(lenView, 0);
+
+    // 受信データをWASMメモリにコピー
+    HEAPU8.set(dataView.subarray(0, len), ptr);
+
+    // 受信完了を通知
+    Atomics.store(ctlView, 0, EMPTY);
+    Atomics.notify(ctlView, 0, 1);
 });
 
 // TODO MPI_Status必要
-int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm) {
-    js_mpi_recv_request(source, tag, comm.commId);
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm) {
+    int ptr = (int)(buf);  // wasm上のアドレスを取得
+    js_mpi_recv(ptr, src, tag, comm.commId);
 
     int bytes = count * mpi_get_size(datatype);
     // 通信処理はここに追加（JS経由）

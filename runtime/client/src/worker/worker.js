@@ -2,9 +2,12 @@ onmessage = (e) => {
     const type = e.data.type;
     if (type == "init") {
         self.Module = {
-            arguments: e.data.args, // mainに渡す引数（argc, argv）
+            args: e.data.args, // mainに渡す引数（argc, argv）
             rank: e.data.rank,
             size: e.data.size,
+            eagerSab: e.data.eagerSab, // SharedArrayBuffer(参照用)
+            HEADER_SIZE: e.data.HEADER_SIZE,
+            PAYLOAD_SIZE: e.data.PAYLOAD_SIZE,
             locateFile: (path) => {
                 if (path.endsWith(".wasm")) {
                     // sample.js と sample.wasm は /runtime/client/wasm/build/ にある

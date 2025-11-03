@@ -1629,8 +1629,8 @@ function checkIncomingModuleAPI() {
   ignoredModuleProp('fetchSettings');
 }
 function js_call_init_comm() { if (typeof Module._mpi_internal_init_world_comm === "function") { Module._mpi_internal_init_world_comm(Module.rank, Module.size); } else { console.error("[ERR] mpi_internal_init_world_comm not found"); } }
-function js_mpi_send(ptr,count,datatypeId,dest,tag,commId,size) { const buf = HEAPU8.slice(ptr, ptr + size); postMessage({ type: "mpi-send", count, datatypeId, dest, tag, commId, payload: buf, }); }
-function js_mpi_recv_request(source,tag,commId) { postMessage({ type: "mpi-recv-request", source, tag, commId, }); }
+function js_mpi_isend(ptr,count,datatypeId,dest,tag,commId,size) { const buf = HEAPU8.slice(ptr, ptr + size); postMessage({ type: "mpi-send", count, datatypeId, dest, tag, commId, payload: buf, }); }
+function js_mpi_recv(ptr,src,tag,commId) { const sab = Module.eagerSab; const HEADER_SIZE = Module.HEADER_SIZE; const PAYLOAD_SIZE = Module.PAYLOAD_SIZE; const ctlView = new Int32Array(sab, 0, 1); const lenView = new Int32Array(sab, 4, 1); const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE); const EMPTY = 0; const FULL = 1; postMessage({ type: "mpi-recv", src, tag, commId, }); console.log("待機中:", Atomics.load(ctlView, 0)); Atomics.wait(ctlView, 0, EMPTY); console.log("再開:", Atomics.load(ctlView, 0)); const len = Atomics.load(lenView, 0); HEAPU8.set(dataView.subarray(0, len), ptr); Atomics.store(ctlView, 0, EMPTY); Atomics.notify(ctlView, 0, 1); }
 var wasmImports = {
   /** @export */
   fd_close: _fd_close,
@@ -1641,9 +1641,9 @@ var wasmImports = {
   /** @export */
   js_call_init_comm,
   /** @export */
-  js_mpi_recv_request,
+  js_mpi_isend,
   /** @export */
-  js_mpi_send
+  js_mpi_recv
 };
 var wasmExports;
 createWasm();
