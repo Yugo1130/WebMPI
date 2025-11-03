@@ -50,9 +50,9 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
         // メインスレッドからも参照しやすいようにworkerオブジェクトに紐づける
         worker.eagerSab = eagerSab;
 
-        const slotHeaderView = new Int32Array(eagerSab, 0, 1);
+        const ctlView = new Int32Array(eagerSab, 0, 1);
         // controlをEMPTYに設定
-        Atomics.store(slotHeaderView, 0, EMPTY);
+        Atomics.store(ctlView, 0, EMPTY);
 
         // workerからのメッセージ受信
         worker.onmessage = (e) => {
@@ -68,6 +68,12 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                     break;
                 case "mpi-recv":
                     recvMpiMessage(e.data, rank);
+                    break;
+                case "mpi-finalize":
+                    // workerの終了
+                    // worker.terminate();
+                    // delete rankToWorker[rank];
+                    // delete rankToSab[rank];
                     break;
             }
         };

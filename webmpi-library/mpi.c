@@ -1,6 +1,7 @@
 #include "mpi.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <emscripten.h>
 
 // 通信定義
@@ -50,12 +51,10 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank) {
 }
 
 // OPTIMIZE postmessageからarraybufferもしくはsharedarraybufferに変えるべき．
-EM_JS(void, js_mpi_isend, (int ptr, int count, int datatypeId, int dest, int tag, int commId, int size), {
+EM_JS(void, js_mpi_isend, (intptr_t ptr, int dest, int tag, int commId, int size), {
     const buf = HEAPU8.slice(ptr, ptr + size);
     postMessage({
         type: "mpi-send",
-        count,
-        datatypeId,
         dest,
         tag,
         commId,
@@ -64,20 +63,20 @@ EM_JS(void, js_mpi_isend, (int ptr, int count, int datatypeId, int dest, int tag
 });
 
 int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
-    int size = count * mpi_get_size(datatype);
-    int datatypeId = mpi_get_id(datatype);
-    int ptr = (int)(buf);  // wasm上のアドレスを取得
-    js_mpi_isend(ptr, count, datatypeId, dest, tag, comm.commId, size);
+    intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
+    int buf_bytes = count * mpi_get_size(datatype);
+    js_mpi_isend(ptr, dest, tag, comm.commId, buf_bytes);
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_recv, (int ptr, int src, int tag, int commId), {
+EM_JS(void, js_mpi_recv, (intptr_t bufPtr, int count, int datatypeId, int src, int tag, int commId, intptr_t statusPtr, int bufBytes), {
     const sab = Module.eagerSab;
     const HEADER_SIZE = Module.HEADER_SIZE;
     const PAYLOAD_SIZE = Module.PAYLOAD_SIZE;
 
     const ctlView = new Int32Array(sab, 0, 1);
     const lenView = new Int32Array(sab, 4, 1);
+    const metaView = new Int32Array(sab, 8, 6);
     const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE);
 
     const EMPTY = 0;
@@ -90,18 +89,26 @@ EM_JS(void, js_mpi_recv, (int ptr, int src, int tag, int commId), {
         commId,
     });
 
-    console.log("待機中:", Atomics.load(ctlView, 0));
-
     // 受信完了まで待機
     Atomics.wait(ctlView, 0, EMPTY);
 
-    console.log("再開:", Atomics.load(ctlView, 0));
-
-    // 受信データ長を取得
     const len = Atomics.load(lenView, 0);
+    const realSrc = Atomics.load(metaView, 0);
+    const realTag = Atomics.load(metaView, 1);
+    
+    const realLen = Math.min(len, bufBytes);
+
+    // ステータス情報を設定
+    const base = statusPtr / 4;
+    if (statusPtr) {
+        HEAP32[base + 0] = realLen;
+        HEAP32[base + 1] = realSrc;
+        HEAP32[base + 2] = realTag;
+        HEAP32[base + 3] = 0; // MPI_SUCCESS
+    }
 
     // 受信データをWASMメモリにコピー
-    HEAPU8.set(dataView.subarray(0, len), ptr);
+    HEAPU8.set(dataView.subarray(0, realLen), bufPtr);
 
     // 受信完了を通知
     Atomics.store(ctlView, 0, EMPTY);
@@ -109,16 +116,35 @@ EM_JS(void, js_mpi_recv, (int ptr, int src, int tag, int commId), {
 });
 
 // TODO MPI_Status必要
-int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm) {
-    int ptr = (int)(buf);  // wasm上のアドレスを取得
-    js_mpi_recv(ptr, src, tag, comm.commId);
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Status *status) {
+    intptr_t buf_ptr = (intptr_t)(buf);  // wasm上のアドレスを取得
+    intptr_t status_ptr = (intptr_t)(status);
+    int buf_bytes = count * mpi_get_size(datatype);
+    js_mpi_recv(buf_ptr, count, datatype, src, tag, comm.commId, status_ptr, buf_bytes);
 
-    int bytes = count * mpi_get_size(datatype);
     // 通信処理はここに追加（JS経由）
     return MPI_SUCCESS;
 }
 
+EM_JS(void, js_mpi_finalize, (), {
+    postMessage({
+        type: "mpi-finalize",
+    });
+});
+
 int MPI_Finalize(void) {
     fflush(stdout);
+    js_mpi_finalize();
     return MPI_SUCCESS;
 }
+
+int MPI_Get_count(MPI_Status *status, MPI_Datatype datatype, int *count) {
+    if (!status || !count) {
+        return MPI_ERR_ARG;
+    }
+    if(status->bytes % mpi_get_size(datatype) != 0) {
+        return MPI_UNDEFINED;
+    }
+    *count = status->bytes / mpi_get_size(datatype);
+    return MPI_SUCCESS;
+}  

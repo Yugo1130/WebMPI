@@ -42,7 +42,7 @@ function sendMatches(recvSrc, recvTag, recvCommId, dataQueue) {
 function writeToSab(eagerSab, data, src) {
     const ctlView = new Int32Array(eagerSab, 0, 1); // control    
     const lenView = new Int32Array(eagerSab, 4, 1); // length            
-    const metaView = new Int32Array(eagerSab, 8, 6); // src, tag, commId, datatypeId, count, 予備
+    const metaView = new Int32Array(eagerSab, 8, 6); // src, tag, commId, 予備×3
     const dataView = new Uint8Array(eagerSab, HEADER_SIZE, PAYLOAD_SIZE); // データ領域
 
     const payload = data.payload ?? new Uint8Array(0); // データ本体（Uint8Array）
@@ -53,8 +53,6 @@ function writeToSab(eagerSab, data, src) {
     Atomics.store(metaView, 0, src);
     Atomics.store(metaView, 1, data.tag == null ? -1 : data.tag);
     Atomics.store(metaView, 2, data.commId);
-    Atomics.store(metaView, 3, data.datatypeId || 0);
-    Atomics.store(metaView, 4, data.count || 0);
 
     // EMPTY -> FULLにしてworkerを起こす
     Atomics.store(ctlView, 0, FULL);
@@ -67,8 +65,6 @@ export async function sendMpiMessage(data, src) {
     // 送信元と送信先が同一clientの場合
     if (srcClientId === destClientId) {
         let index = recvMatches(src, data.tag, data.commId, requestQueue);
-        console.log("sendMpiMessage requestQueue:", requestQueue);
-        console.log("sendMpiMessage index:", index);
         if (index >= 0) {
             // requestQueueから該当エントリを削除
             requestQueue.splice(index, 1);
@@ -95,8 +91,6 @@ export async function sendMpiMessage(data, src) {
                 dest: data.dest,
                 tag: data.tag,
                 commId: data.commId,
-                count: data.count,
-                datatypeId: data.datatypeId,
                 payload: data.payload,
             });
         }
@@ -111,8 +105,6 @@ export async function recvMpiMessage(data, dest) {
     // 送信元と送信先が同一clientの場合
     if (srcClientId === destClientId) {
         let index = sendMatches(data.src, data.tag, data.commId, dataQueue);
-        console.log("recvMpiMessage dataQueue:", dataQueue);
-        console.log("recvMpiMessage index:", index);
         if (index >= 0) {
             // dataQueueから該当エントリを論理削除
             dataQueue[index].matched = true;
