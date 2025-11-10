@@ -63,7 +63,7 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                 case "standard-error-output":
                     output.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
                     break;
-                case "mpi-send":
+                case "mpi-send-eager":
                     sendMpiMessage(e.data, rank);
                     break;
                 case "mpi-recv":
@@ -71,9 +71,8 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                     break;
                 case "mpi-finalize":
                     // workerの終了
-                    // worker.terminate();
-                    // delete rankToWorker[rank];
-                    // delete rankToSab[rank];
+                    output_info.textContent += `[rank ${rank}]: Finalized.\n`;
+                    worker.terminate();
                     break;
             }
         };

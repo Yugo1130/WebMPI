@@ -51,10 +51,10 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank) {
 }
 
 // OPTIMIZE postmessageからarraybufferもしくはsharedarraybufferに変えるべき．
-EM_JS(void, js_mpi_isend, (intptr_t ptr, int dest, int tag, int commId, int size), {
+EM_JS(void, js_mpi_send_eager, (intptr_t ptr, int dest, int tag, int commId, int size), {
     const buf = HEAPU8.slice(ptr, ptr + size);
     postMessage({
-        type: "mpi-send",
+        type: "mpi-send-eager",
         dest,
         tag,
         commId,
@@ -62,10 +62,10 @@ EM_JS(void, js_mpi_isend, (intptr_t ptr, int dest, int tag, int commId, int size
     });
 });
 
-int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
+int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
     intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
     int buf_bytes = count * mpi_get_size(datatype);
-    js_mpi_isend(ptr, dest, tag, comm.commId, buf_bytes);
+    js_mpi_send_eager(ptr, dest, tag, comm.commId, buf_bytes);
     return MPI_SUCCESS;
 }
 

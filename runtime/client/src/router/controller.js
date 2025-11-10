@@ -14,7 +14,6 @@ const WS_HOST = location.hostname;
 const WS_PORT = 9000;
 const socket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`);
 
-let nodeCount = 0;
 let clientId = "controller";
 
 // index.htmlで実行ボタンが押されると，サーバにnpの数や引数をwebsocketで送信．
