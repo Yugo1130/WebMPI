@@ -22,5 +22,3 @@ socket.onmessage = (event) => {
         handleSpawnInfo(data, clientId, output, output_info);
     }
 };
-// window.addEventListener("DOMContentLoaded", () => {
-// });
