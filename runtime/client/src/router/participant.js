@@ -10,17 +10,17 @@ const WS_PORT = 9001;
 const socket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`);
 
 let clientId;
-window.addEventListener("DOMContentLoaded", () => {
 
-    socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
 
-        if (data.type === "connection_info") {
-            clientId = data.id;
-            output_info.textContent += `connected: ${clientId} \n`;
-        }
-        if (data.type === "spawn_info") {
-            handleSpawnInfo(data, clientId, output, output_info);
-        }
-    };
-});
+    if (data.type === "connection_info") {
+        clientId = data.id;
+        output_info.textContent += `connected: ${clientId} \n`;
+    }
+    if (data.type === "spawn_info") {
+        handleSpawnInfo(data, clientId, output, output_info);
+    }
+};
+// window.addEventListener("DOMContentLoaded", () => {
+// });
