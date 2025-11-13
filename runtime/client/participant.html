@@ -4,11 +4,19 @@
 <head>
     <meta charset="UTF-8">
     <title>WebMPI Participant</title>
+    <!-- HACK: CDN版のため後程ビルド版に移行 -->
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
 
-<body>
-    <pre id="output"></pre>
-    <script type="module" src="/src/router/participant.js"></script>
+<body class="bg-gray-100 text-gray-800">
+    <div id="main" class="max-w-3xl mx-auto mt-10 p-6 bg-white shadow-lg rounded-lg">
+        <h1 class="text-2xl font-bold mb-6">WebMPI Participant</h1>
+            <div class="space-y-4">
+                <pre id="output_info" class="bg-gray-300 p-4 rounded-md overflow-x-auto"></pre>
+                <pre id="output" class="bg-gray-900 text-green-400 p-4 rounded-md overflow-x-auto"></pre>
+            </div>
+        <script type="module" src="/src/router/participant.js"></script>
+    </div>
 </body>
 
 </html>

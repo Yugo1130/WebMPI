@@ -1,21 +1,28 @@
-// router.js
 import { handleSpawnInfo } from "./client.js";
+import { transferSocket } from "./router.js";
 
 const argsInput = document.getElementById("args");
 const np = document.getElementById("np");
 const runBtn = document.getElementById("run");
-const nodeTable = document.getElementById("nodeTable").querySelector("tbody");
+const clientTables = document.getElementById("clientTables").querySelector("tbody");
 const output = document.getElementById("output");
+const output_info = document.getElementById("output_info");
 const mainDiv = document.getElementById("main");
 const errorDiv = document.getElementById("error");
 
-// const socket = new WebSocket("ws://localhost:9000");
 const WS_HOST = location.hostname;
 const WS_PORT = 9000;
-const socket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`);
+const controllerSocket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`, "controller");
 
-let nodeCount = 0;
 let clientId = "controller";
+
+// 既知のclientIdをtransferSocketで送信
+transferSocket.onopen = () => {
+    transferSocket.send(JSON.stringify({
+        type: "send_known_clientId",
+        id: clientId,
+    }));
+}
 
 // index.htmlで実行ボタンが押されると，サーバにnpの数や引数をwebsocketで送信．
 runBtn.addEventListener("click", () => {
@@ -24,35 +31,35 @@ runBtn.addEventListener("click", () => {
     const args = input.trim().split(/\s+/).filter(arg => arg.length > 0);
     const worldSize = parseInt(np.value, 10);
 
-    const nodes = [];
-    nodeTable.querySelectorAll("tr").forEach(row => {
-        const id = row.cells[0].textContent;
+    const clientSlotLimits = [];
+    clientTables.querySelectorAll("tr").forEach(row => {
+        const clientId = row.cells[0].textContent;
         const slotInput = row.querySelector("input");
-        const slots = parseInt(slotInput.value, 10);
+        // -1は無制限を意味する
+        const limit = parseInt(slotInput.value, 10);
 
-        nodes.push({ id, slots });
+        clientSlotLimits.push({ clientId, limit });
     });
 
-    // TODO slots数がWorldSizeに満たない場合はエラーを返す
+    // TODO limit数がWorldSizeに満たない場合はエラーを返す
 
-    socket.send(JSON.stringify({
-        type: "request_spawn",
+    controllerSocket.send(JSON.stringify({
+        type: "request_allocation",
         worldSize,
         args,
-        nodes,
+        clientSlotLimits,
     }));
 
 });
 
-socket.onmessage = (event) => {
+controllerSocket.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
-    if (data.type === "spawn_info") {
-        handleSpawnInfo(data, clientId, output);
-    }
-    if (data.type === "client_list") {
+    if (data.type === "allocation_info") {
+        handleSpawnInfo(data, clientId, output, output_info);
+    } else if (data.type === "update_client_list") {
         // 毎回クリアして更新
-        nodeTable.innerHTML = "";
+        clientTables.innerHTML = "";
 
         data.clientInfos.forEach((client) => {
             const row = document.createElement("tr");
@@ -61,15 +68,12 @@ socket.onmessage = (event) => {
             <td>${client.ip}</td>
             <td><input type="number" min="-1" value="-1" step="1"></td>
             `;
-            nodeTable.appendChild(row);
+            clientTables.appendChild(row);
         });
-    }
-    if (data.type === "multiple-controllers-error") {
+    } else if (data.type === "multiple_controllers_error") {
         mainDiv.style.display = "none";
         errorDiv.style.display = "block";
+    } else if (data.type === "insufficient_slots_error") {
+        output_info.textContent += "WARNING: プロセス数が合計割当可能数を上回っています．\n"
     }
-    if (data.type === "insufficient-slots-error") {
-        output.textContent += "WARNING: プロセス数が合計割当可能数を上回っています．\n"
-    }
-
 };

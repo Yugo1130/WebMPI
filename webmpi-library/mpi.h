@@ -6,13 +6,18 @@ extern "C" {
 #endif
 
 typedef struct _MPI_Status {
-    int count;
-    int cancelled;
+    int bytes;
     int MPI_SOURCE;
     int MPI_TAG;
     int MPI_ERROR;
 } MPI_Status;
 
+typedef struct _MPI_Request {
+    int requestId; // リクエストの識別子
+    int isComplete; // 完了フラグ
+} MPI_Request;
+
+// Mpi Error Classes
 #define MPI_SUCCESS 0
 #define MPI_ERR_BUFFER 1
 #define MPI_ERR_COUNT 2
@@ -69,6 +74,12 @@ typedef struct _MPI_Status {
 #define MPI_ERR_ASSERT 53
 #define MPI_ERR_LASTCODE 0x3fffffff
 
+#define MPI_UNDEFINED -32766
+
+
+#define MPI_ANY_SOURCE -1
+#define MPI_ANY_TAG -1
+
 typedef enum _MPI_Datatype { 
     MPI_CHAR           = 0x4c000101,
     MPI_UNSIGNED_CHAR  = 0x4c000102,
@@ -91,7 +102,7 @@ typedef enum _MPI_Datatype {
 
 // 通信定義
 
-typedef struct {
+typedef struct _MPI_Comm {
     int commId; // コミュニケータの識別子（MPI_COMM_WORLD = 0）
     int commRank; // 自ノードのランク
     int commSize; // 総プロセス数
@@ -105,8 +116,11 @@ int MPI_Init(int *argc, char ***argv);
 int MPI_Comm_size(MPI_Comm comm, int *size);
 int MPI_Comm_rank(MPI_Comm comm, int *rank);
 int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
-int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm);
+int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Status *status);
+int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Request *request);
 int MPI_Finalize(void);
+int MPI_Get_count(MPI_Status *status, MPI_Datatype datatype, int *count);
 
 // その他定数
 // TODO エラーコードの定義

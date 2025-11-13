@@ -1,45 +1,165 @@
 import { rankToClientId } from "./client.js"
-import { rankToWorker } from "./client.js"
+import { rankToSab } from "./client.js"
+import { HEADER_SIZE, PAYLOAD_SIZE } from "./client.js";
 
-const messageQueue = [];
+const WS_HOST = location.hostname;
+const WS_PORT = 9000;
+export const transferSocket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`, "transfer");
+
+const dataQueue = [];
 const requestQueue = [];
 
-export function sendMpiMessage(data, source) {
-    // 送信先が同じclientの場合
-    const destClientId = rankToClientId[data.dest];
-    const sourceClientId = rankToClientId[source]
-    if (destClientId === sourceClientId) {
-        const matchedMsgIndex = requestQueue.findIndex(msg =>
-            (msg.source === data.source || msg.source === null) &&
-            (msg.tag === data.tag || msg.tag === null) &&
-            msg.commId === data.commId
-        );
-        if (matchedMsgIndex !== -1) {
-            // console.log("送信先が同じ");
-            // 送信先ごとにキューを管理
-            messageQueue.push({
-                source,
-                dest: data.dest,
-                tag: data.tag,
-                commId: data.commId,
-                count: data.count,
-                datatypeId: data.datatypeId,
-                payload: data.payload,
-            });
-        }else{
-            
+// 制御フラグ(EMPTY = 空き, FULL = データあり)
+export const EMPTY = 0, FULL = 1;
+
+// mpi.hに合わせる
+export const ANY_SRC = -1;
+export const ANY_TAG = -1;
+
+function recvMatches(sendSrc, sendTag, sendCommId, requestQueue) {
+    for (let i = 0; i < requestQueue.length; i++) {
+        const recv = requestQueue[i];
+        const srcMatch = (recv.src === ANY_SRC) || (sendSrc === recv.src);
+        const tagMatch = (recv.tag === ANY_TAG) || (sendTag === recv.tag);
+        const commIdMatch = (sendCommId === recv.commId);
+        if (srcMatch && tagMatch && commIdMatch) {
+            return i; // マッチしたインデックスを返す
         }
+    }
+    return -1; // マッチなし
+}
+
+function sendMatches(recvSrc, recvTag, recvCommId, dataQueue) {
+    for (let i = 0; i < dataQueue.length; i++) {
+        const send = dataQueue[i];
+        if (send.matched) continue; // 既にマッチ済みの場合はスキップ
+        const srcMatch = (recvSrc === ANY_SRC) || (recvSrc === send.src);
+        const tagMatch = (recvTag === ANY_TAG) || (recvTag === send.tag);
+        const commIdMatch = (recvCommId === send.commId);
+        if (srcMatch && tagMatch && commIdMatch) {
+            return i; // マッチしたインデックスを返す
+        }
+    }
+    return -1; // マッチなし
+}
+
+function writeToSab(eagerSab, src, tag, commId, payload) {
+    const ctlView = new Int32Array(eagerSab, 0, 1); // control    
+    const lenView = new Int32Array(eagerSab, 4, 1); // length            
+    const metaView = new Int32Array(eagerSab, 8, 6); // src, tag, commId, 予備×3
+    const dataView = new Uint8Array(eagerSab, HEADER_SIZE, PAYLOAD_SIZE); // データ領域
+
+    const length = Math.min(payload.byteLength, dataView.byteLength);
+
+    dataView.set(payload.subarray(0, length), 0);
+    Atomics.store(lenView, 0, length);
+    Atomics.store(metaView, 0, src);
+    Atomics.store(metaView, 1, tag);
+    Atomics.store(metaView, 2, commId);
+
+    // EMPTY -> FULLにしてworkerを起こす
+    Atomics.store(ctlView, 0, FULL);
+    Atomics.notify(ctlView, 0, 1);
+}
+
+function sendToServerMpiMessage(src, dest, tag, commId, payload) {
+    const destClientId = rankToClientId[dest];
+
+    transferSocket.send(JSON.stringify({
+        type: "mpi-message-to-server",
+        src,
+        dest,
+        destClientId,
+        tag,
+        commId,
+        payload: Array.from(payload), // Uint8ArrayからArrayに変換
+    }));
+}
+
+async function sendingProcess(src, dest, tag, commId, payload) {
+    let index = recvMatches(src, tag, commId, requestQueue);
+    if (index >= 0) {
+        // requestQueueから該当エントリを削除
+        requestQueue.splice(index, 1);
+
+        // 送信先rankのSABを取得
+        const eagerSab = rankToSab[dest];
+
+        const ctlView = new Int32Array(eagerSab, 0, 1); // control
+
+        // 制御フラグがFULLの場合は待機（非同期処理）
+        // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
+        // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
+        while (true) {
+            const result = Atomics.waitAsync(ctlView, 0, FULL);
+            if (!result.async) break;
+            await result.value;
+        }
+
+        writeToSab(eagerSab, src, tag, commId, payload);
     } else {
-        console.log("送信先が異なる");
+        // arraybufferにするべきかもしれない
+        dataQueue.push({
+            src,
+            dest,
+            tag,
+            commId,
+            payload,
+        });
     }
 }
 
-export function requsetMpiMessage(data, dest) {
-    requestQueue.push({
-        source: data.source,
-        dest,
-        tag: data.tag,
-        commId: data.commId
-        // destは？
-    });
+export function sendMpiMessage(src, dest, tag, commId, payload) {
+    const srcClientId = rankToClientId[src];
+    const destClientId = rankToClientId[dest];
+    // 送信元と送信先が同一clientの場合
+    if (srcClientId === destClientId) {
+        sendingProcess(src, dest, tag, commId, payload);
+    // 送信先が異なるclientの場合はサーバ経由で送信
+    } else {
+        sendToServerMpiMessage(src, dest, tag, commId, payload);
+    }
+}
+
+export async function recvMpiMessage(src, dest, tag, commId) {
+    let index = sendMatches(src, tag, commId, dataQueue);
+    if (index >= 0) {
+        // dataQueueから該当エントリを論理削除
+        dataQueue[index].matched = true;
+
+        // 送信先rankのSABを取得
+        const eagerSab = rankToSab[dest];
+
+        const ctlView = new Int32Array(eagerSab, 0, 1); // control
+
+        // 制御フラグがFULLの場合は待機（非同期処理）
+        // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
+        // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
+        while (true) {
+            const result = Atomics.waitAsync(ctlView, 0, FULL);
+            if (!result.async) break;
+            await result.value;
+        }
+
+        // MPI_ANY_SOURCE, MPI_ANY_TAG対応に対応するため，src, tagは送信元の情報を使用する．
+        writeToSab(eagerSab, dataQueue[index].src, dataQueue[index].tag, commId, dataQueue[index].payload);
+
+        // SABに書き込んだ後にdataQueueから削除
+        dataQueue.splice(index, 1);
+    } else {
+        requestQueue.push({
+            src,
+            dest,
+            tag,
+            commId,
+        });
+    }
+}
+
+transferSocket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "mpi-message-to-client") {
+        const payload = Uint8Array.from(data.payload); // ArrayからUint8Arrayに変換
+        sendingProcess(data.src, data.dest, data.tag, data.commId, payload);
+    }
 }

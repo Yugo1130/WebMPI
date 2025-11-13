@@ -7,9 +7,9 @@ services:
     ports:
       - "8080:80"
     volumes:
-      # runtime/client を nginx のドキュメントルートにマウント（静的ファイルを配信する）
+      # runtime/clientをnginxのドキュメントルートにマウント（静的ファイルを配信）
       - ./runtime/client:/usr/share/nginx/html:ro
-      # カスタム nginx 設定ファイルを nginx の設定場所にマウント（設定上書き）
+      # nginx.conf(nginxの設定ファイル)をマウント（上書き）
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
   app:
@@ -19,7 +19,6 @@ services:
     container_name: node-server
     ports:
       - "9000:9000"
-      - "9001:9001"
     restart: unless-stopped
 
   # wasm:
