@@ -2,6 +2,10 @@ import { rankToClientId } from "./client.js"
 import { rankToSab } from "./client.js"
 import { HEADER_SIZE, PAYLOAD_SIZE } from "./client.js";
 
+const WS_HOST = location.hostname;
+const WS_PORT = 9000;
+export const transferSocket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`, "transfer");
+
 const dataQueue = [];
 const requestQueue = [];
 
@@ -39,103 +43,123 @@ function sendMatches(recvSrc, recvTag, recvCommId, dataQueue) {
     return -1; // マッチなし
 }
 
-function writeToSab(eagerSab, data, src) {
+function writeToSab(eagerSab, src, tag, commId, payload) {
     const ctlView = new Int32Array(eagerSab, 0, 1); // control    
     const lenView = new Int32Array(eagerSab, 4, 1); // length            
     const metaView = new Int32Array(eagerSab, 8, 6); // src, tag, commId, 予備×3
     const dataView = new Uint8Array(eagerSab, HEADER_SIZE, PAYLOAD_SIZE); // データ領域
 
-    const payload = data.payload ?? new Uint8Array(0); // データ本体（Uint8Array）
     const length = Math.min(payload.byteLength, dataView.byteLength);
 
     dataView.set(payload.subarray(0, length), 0);
     Atomics.store(lenView, 0, length);
     Atomics.store(metaView, 0, src);
-    Atomics.store(metaView, 1, data.tag == null ? -1 : data.tag);
-    Atomics.store(metaView, 2, data.commId);
+    Atomics.store(metaView, 1, tag);
+    Atomics.store(metaView, 2, commId);
 
     // EMPTY -> FULLにしてworkerを起こす
     Atomics.store(ctlView, 0, FULL);
     Atomics.notify(ctlView, 0, 1);
-}   
+}
 
-export async function sendMpiMessage(data, src) {
-    const srcClientId = rankToClientId[src];
-    const destClientId = rankToClientId[data.dest];
-    // 送信元と送信先が同一clientの場合
-    if (srcClientId === destClientId) {
-        let index = recvMatches(src, data.tag, data.commId, requestQueue);
-        if (index >= 0) {
-            // requestQueueから該当エントリを削除
-            requestQueue.splice(index, 1);
+function sendToServerMpiMessage(src, dest, tag, commId, payload) {
+    const destClientId = rankToClientId[dest];
 
-            // 送信先rankのSABを取得
-            const eagerSab = rankToSab[data.dest];
+    transferSocket.send(JSON.stringify({
+        type: "mpi-message-to-server",
+        src,
+        dest,
+        destClientId,
+        tag,
+        commId,
+        payload: Array.from(payload), // Uint8ArrayからArrayに変換
+    }));
+}
 
-            const ctlView = new Int32Array(eagerSab, 0, 1); // control
+async function sendingProcess(src, dest, tag, commId, payload) {
+    let index = recvMatches(src, tag, commId, requestQueue);
+    if (index >= 0) {
+        // requestQueueから該当エントリを削除
+        requestQueue.splice(index, 1);
 
-            // 制御フラグがFULLの場合は待機（非同期処理）
-            // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
-            // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
-            while (true) {
-                const result = Atomics.waitAsync(ctlView, 0, FULL);
-                if (!result.async) break;
-                await result.value;
-            }
+        // 送信先rankのSABを取得
+        const eagerSab = rankToSab[dest];
 
-            writeToSab(eagerSab, data, src);
-        } else {
-            // arraybufferにするべきかもしれない
-            dataQueue.push({
-                src,
-                dest: data.dest,
-                tag: data.tag,
-                commId: data.commId,
-                payload: data.payload,
-            });
+        const ctlView = new Int32Array(eagerSab, 0, 1); // control
+
+        // 制御フラグがFULLの場合は待機（非同期処理）
+        // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
+        // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
+        while (true) {
+            const result = Atomics.waitAsync(ctlView, 0, FULL);
+            if (!result.async) break;
+            await result.value;
         }
+
+        writeToSab(eagerSab, src, tag, commId, payload);
     } else {
-        console.log("送信先が異なる");
+        // arraybufferにするべきかもしれない
+        dataQueue.push({
+            src,
+            dest,
+            tag,
+            commId,
+            payload,
+        });
     }
 }
 
-export async function recvMpiMessage(data, dest) {
-    const srcClientId = rankToClientId[data.src];
+export function sendMpiMessage(src, dest, tag, commId, payload) {
+    const srcClientId = rankToClientId[src];
     const destClientId = rankToClientId[dest];
     // 送信元と送信先が同一clientの場合
     if (srcClientId === destClientId) {
-        let index = sendMatches(data.src, data.tag, data.commId, dataQueue);
-        if (index >= 0) {
-            // dataQueueから該当エントリを論理削除
-            dataQueue[index].matched = true;
-            
-            // 送信先rankのSABを取得
-            const eagerSab = rankToSab[dest];
-            
-            const ctlView = new Int32Array(eagerSab, 0, 1); // control
-            
-            // 制御フラグがFULLの場合は待機（非同期処理）
-            // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
-            // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
-            while (true) {
-                const result = Atomics.waitAsync(ctlView, 0, FULL);
-                if (!result.async) break;
-                await result.value;
-            }
-
-            writeToSab(eagerSab, dataQueue[index], data.src);
-
-            // SABに書き込んだ後にdataQueueから削除
-            dataQueue.splice(index, 1);
-        } else {
-            requestQueue.push({
-                src: data.src,
-                dest,
-                tag: data.tag,
-                commId: data.commId,
-            });
-        }
+        sendingProcess(src, dest, tag, commId, payload);
+    // 送信先が異なるclientの場合はサーバ経由で送信
     } else {
-        console.log("送信元が異なる");
+        sendToServerMpiMessage(src, dest, tag, commId, payload);
+    }
+}
+
+export async function recvMpiMessage(src, dest, tag, commId) {
+    let index = sendMatches(src, tag, commId, dataQueue);
+    if (index >= 0) {
+        // dataQueueから該当エントリを論理削除
+        dataQueue[index].matched = true;
+
+        // 送信先rankのSABを取得
+        const eagerSab = rankToSab[dest];
+
+        const ctlView = new Int32Array(eagerSab, 0, 1); // control
+
+        // 制御フラグがFULLの場合は待機（非同期処理）
+        // ctlView[0] !== FULL：{async:false, value:"not-equal"} が返る
+        // ctlView[0] === FULL：{async:true, value: Promise<"ok"|"timed-out">} が返る
+        while (true) {
+            const result = Atomics.waitAsync(ctlView, 0, FULL);
+            if (!result.async) break;
+            await result.value;
+        }
+
+        // MPI_ANY_SOURCE, MPI_ANY_TAG対応に対応するため，src, tagは送信元の情報を使用する．
+        writeToSab(eagerSab, dataQueue[index].src, dataQueue[index].tag, commId, dataQueue[index].payload);
+
+        // SABに書き込んだ後にdataQueueから削除
+        dataQueue.splice(index, 1);
+    } else {
+        requestQueue.push({
+            src,
+            dest,
+            tag,
+            commId,
+        });
+    }
+}
+
+transferSocket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "mpi-message-to-client") {
+        const payload = Uint8Array.from(data.payload); // ArrayからUint8Arrayに変換
+        sendingProcess(data.src, data.dest, data.tag, data.commId, payload);
     }
 }

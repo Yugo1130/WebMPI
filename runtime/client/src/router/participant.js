@@ -1,24 +1,28 @@
 import { handleSpawnInfo } from "./client.js";
+import { transferSocket } from "./router.js";
 
 const output = document.getElementById("output");
 const output_info = document.getElementById("output_info");
 
 // TODO 接続先URLは.envで管理する
-// const socket = new WebSocket("ws://localhost:9001");
 const WS_HOST = location.hostname;
-const WS_PORT = 9001;
-const socket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`);
+const WS_PORT = 9000;
+const participantSocket = new WebSocket(`ws://${WS_HOST}:${WS_PORT}`, "participant");
 
 let clientId;
 
-socket.onmessage = (event) => {
+participantSocket.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === "connection_info") {
         clientId = data.id;
+        transferSocket.send(JSON.stringify({
+            type: "send_known_clientId",
+            id: clientId,
+        }));
         output_info.textContent += `connected: ${clientId} \n`;
-    }
-    if (data.type === "spawn_info") {
+
+    } else if (data.type === "allocation_info") {
         handleSpawnInfo(data, clientId, output, output_info);
-    }
+    } 
 };
