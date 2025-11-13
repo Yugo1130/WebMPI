@@ -20,7 +20,7 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
     rankToSab = {};
     const size = data.size;
     const args = data.args;
-    for (const info of data.rankInfos) {
+    for (const info of data.rankAssignments) {
         rankToClientId[info.rank] = info.clientId;
         if (!clientIdToRanks[info.clientId]) {
             clientIdToRanks[info.clientId] = [];
@@ -64,10 +64,10 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                     output.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
                     break;
                 case "mpi-send-eager":
-                    sendMpiMessage(e.data, rank);
+                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.payload);
                     break;
                 case "mpi-recv":
-                    recvMpiMessage(e.data, rank);
+                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId);
                     break;
                 case "mpi-finalize":
                     // workerの終了
