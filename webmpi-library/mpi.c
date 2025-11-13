@@ -50,9 +50,15 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank) {
     return MPI_SUCCESS;
 }
 
-// OPTIMIZE postmessageからarraybufferもしくはsharedarraybufferに変えるべき．
 EM_JS(void, js_mpi_send_eager, (intptr_t ptr, int dest, int tag, int commId, int size), {
+    // HEAP8はwasmのメモリに張られたビュー．
+    // それを新しいarraybufferにコピーしてそれに張られたUint8Array(=buf)を作成
+    // buf.bufferがarraybufferそのもの．
+    // bufはUint8Array（ビュー）
     const buf = HEAPU8.slice(ptr, ptr + size);
+    // OPTIMIZE 以下を参考にコピーではなく移譲にする．（現状2回コピーが発生している．）
+    // 論文：オーバーヘッドを比較する．
+    // https://qiita.com/Quramy/items/8c12e6c3ad208c97c99a
     postMessage({
         type: "mpi-send-eager",
         dest,
