@@ -1,17 +1,9 @@
 import { sendMpiMessage, recvMpiMessage } from "./router.js";
-import { EMPTY, FULL } from "./router.js";
 
 export let rankToClientId; // rankが割り振られたclientIdを導出
 export let clientIdToRanks; // clientIdに割り振られたrank（複数）を導出
 export let rankToWorker; // rankに対応するworkerを導出
 export let rankToSab; // rankに対応するSABを導出
-
-// SABのヘッダサイズ(32bytes)
-export const HEADER_SIZE = 32;
-// ペイロードサイズ(8KB)
-export const PAYLOAD_SIZE = 8 * 1024;
-// SABサイズ
-export const SAB_SIZE = HEADER_SIZE + PAYLOAD_SIZE;
 
 export function handleSpawnInfo(data, clientId, output, output_info) {
     rankToClientId = {};
@@ -43,20 +35,14 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
         const worker = new Worker("/src/worker/worker.js");
         rankToWorker[rank] = worker;
 
-        // rankごとにSAB(eager用)を生成してworkerに渡す
-        const eagerSab = new SharedArrayBuffer(SAB_SIZE);
-        rankToSab[rank] = eagerSab;
-
-        // メインスレッドからも参照しやすいようにworkerオブジェクトに紐づける
-        worker.eagerSab = eagerSab;
-
-        const ctlView = new Int32Array(eagerSab, 0, 1);
-        // controlをEMPTYに設定
-        Atomics.store(ctlView, 0, EMPTY);
-
         // workerからのメッセージ受信
         worker.onmessage = (e) => {
             switch (e.data.type) {
+                case "wasm-memory-sab-ready":
+                    rankToSab[rank] = e.data.wasmmemorySab;
+                    // メインスレッドからも参照しやすいようにworkerオブジェクトに紐づける
+                    worker.wasmmemorySab = e.data.wasmmemorySab;
+                    break;
                 case "standard-output":
                     output.textContent += `[rank ${rank}]: ${e.data.text}\n`;
                     break;
@@ -64,10 +50,13 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                     output.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
                     break;
                 case "mpi-send-eager":
-                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.payload);
+                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr);
                     break;
                 case "mpi-recv":
-                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId);
+                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr, e.data.statusPtr, undefined);
+                    break;
+                case "mpi-irecv":
+                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr, undefined, e.data.requestPtr);
                     break;
                 case "mpi-finalize":
                     // workerの終了
@@ -80,12 +69,9 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
         // initメッセージで事前にSABをworkerに渡す
         worker.postMessage({
             type: "init",
+            args,
             rank,
             size,
-            args,
-            eagerSab,
-            HEADER_SIZE,
-            PAYLOAD_SIZE,
         });
     }
 }

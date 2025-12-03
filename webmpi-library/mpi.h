@@ -15,6 +15,9 @@ typedef struct _MPI_Status {
 typedef struct _MPI_Request {
     int requestId; // リクエストの識別子
     int isComplete; // 完了フラグ
+    int bytes;
+    int MPI_SOURCE;
+    int MPI_TAG;
 } MPI_Request;
 
 // Mpi Error Classes
@@ -116,7 +119,7 @@ int MPI_Init(int *argc, char ***argv);
 int MPI_Comm_size(MPI_Comm comm, int *size);
 int MPI_Comm_rank(MPI_Comm comm, int *rank);
 int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
-int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm);
+int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request *request);
 int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Status *status);
 int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Request *request);
 int MPI_Finalize(void);

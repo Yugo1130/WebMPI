@@ -4,10 +4,7 @@ onmessage = (e) => {
         self.Module = {
             args: e.data.args, // mainに渡す引数（argc, argv）
             rank: e.data.rank,
-            size: e.data.size,
-            eagerSab: e.data.eagerSab, // SharedArrayBuffer(参照用)
-            HEADER_SIZE: e.data.HEADER_SIZE,
-            PAYLOAD_SIZE: e.data.PAYLOAD_SIZE,
+            size: e.data.size,            
             locateFile: (path) => {
                 if (path.endsWith(".wasm")) {
                     // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
@@ -29,7 +26,15 @@ onmessage = (e) => {
                 text,
             }),
             // 初期化後に呼ばれる関数
-            onRuntimeInitialized: () => {}
+            onRuntimeInitialized: () => {
+                // SABとして確保したWASMメモリを取得
+                const wasmmemorySab = self.Module.wasmMemory.buffer;
+
+                postMessage({
+                    type: "wasm-memory-sab-ready",
+                    wasmmemorySab, // SABの参照を送信
+                });
+            }
         };
 
         // 通常モード（MODULARIZE=0）なら sample.js 読み込み時に自動で Module を使う

@@ -19,6 +19,7 @@ export const dataTransfer = (ws, req) => {
                 dest: data.dest,
                 tag: data.tag,
                 commId: data.commId,
+                bufSize: data.bufSize,
                 payload: data.payload,
             }));
         } else if (data.type === "send_known_clientId") {
