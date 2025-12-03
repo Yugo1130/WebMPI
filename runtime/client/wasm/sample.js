@@ -14,6 +14,10 @@
 // can continue to use Module afterwards as well.
 var Module = typeof Module != 'undefined' ? Module : {};
 
+// The way we signal to a worker that it is hosting a pthread is to construct
+// it with a specific name.
+var ENVIRONMENT_IS_WASM_WORKER = globalThis.name == 'em-ww';
+
 // Determine the runtime environment we are in. You can customize this by
 // setting the ENVIRONMENT setting at compile time (see settings.js).
 
@@ -27,6 +31,10 @@ var ENVIRONMENT_IS_SHELL = !ENVIRONMENT_IS_WEB && !ENVIRONMENT_IS_NODE && !ENVIR
 
 if (ENVIRONMENT_IS_NODE) {
 
+  var worker_threads = require('worker_threads');
+  global.Worker = worker_threads.Worker;
+  ENVIRONMENT_IS_WORKER = !worker_threads.isMainThread;
+  ENVIRONMENT_IS_WASM_WORKER = ENVIRONMENT_IS_WORKER && worker_threads['workerData'] == 'em-ww'
 }
 
 // --pre-jses are emitted after the Module integration code, so that they can
@@ -179,8 +187,22 @@ if (ENVIRONMENT_IS_WORKER) {
   throw new Error('environment detection error');
 }
 
-var out = console.log.bind(console);
-var err = console.error.bind(console);
+// Set up the out() and err() hooks, which are how we can print to stdout or
+// stderr, respectively.
+// Normally just binding console.log/console.error here works fine, but
+// under node (with workers) we see missing/out-of-order messages so route
+// directly to stdout and stderr.
+// See https://github.com/emscripten-core/emscripten/issues/14804
+var defaultPrint = console.log.bind(console);
+var defaultPrintErr = console.error.bind(console);
+if (ENVIRONMENT_IS_NODE) {
+  var utils = require('util');
+  var stringify = (a) => typeof a == 'object' ? utils.inspect(a) : a;
+  defaultPrint = (...args) => fs.writeSync(1, args.map(stringify).join(' ') + '\n');
+  defaultPrintErr = (...args) => fs.writeSync(2, args.map(stringify).join(' ') + '\n');
+}
+var out = defaultPrint;
+var err = defaultPrintErr;
 
 var IDBFS = 'IDBFS is no longer included by default; build with -lidbfs.js';
 var PROXYFS = 'PROXYFS is no longer included by default; build with -lproxyfs.js';
@@ -219,6 +241,9 @@ if (typeof WebAssembly != 'object') {
 // Wasm globals
 
 var wasmMemory;
+
+// For sending to workers.
+var wasmModule;
 
 //========================================
 // Runtime essentials
@@ -337,6 +362,15 @@ var runtimeDebug = true; // Switch to false at runtime to disable logging at the
 // Used by XXXXX_DEBUG settings to output debug messages.
 function dbg(...args) {
   if (!runtimeDebug && typeof runtimeDebug != 'undefined') return;
+  // Avoid using the console for debugging in multi-threaded node applications
+  // See https://github.com/emscripten-core/emscripten/issues/14804
+  if (ENVIRONMENT_IS_NODE) {
+    // TODO(sbc): Unify with err/out implementation in shell.sh.
+    var fs = require('fs');
+    var utils = require('util');
+    var stringify = (a) => typeof a == 'object' ? utils.inspect(a) : a;
+    fs.writeSync(1, args.map(stringify).join(' ') + '\n');
+  } else
   // TODO(sbc): Make this configurable somehow.  Its not always convenient for
   // logging to show up as warnings.
   console.warn(...args);
@@ -446,9 +480,92 @@ function unexportedRuntimeSymbol(sym) {
   }
 }
 
+/**
+ * Override `err`/`out`/`dbg` to report thread / worker information
+ */
+function initWorkerLogging() {
+  function getLogPrefix() {
+    if (Module['$ww']) {
+      return `ww:${Module['$ww']}:`
+    }
+    return `ww:0:`;
+  }
+
+  // Prefix all dbg() messages with the calling thread info.
+  var origDbg = dbg;
+  dbg = (...args) => origDbg(getLogPrefix(), ...args);
+}
+
+initWorkerLogging();
+
 // end include: runtime_debug.js
 // include: memoryprofiler.js
 // end include: memoryprofiler.js
+var wasmModuleReceived;
+
+if (ENVIRONMENT_IS_NODE && (ENVIRONMENT_IS_WASM_WORKER)) {
+  // Create as web-worker-like an environment as we can.
+  var parentPort = worker_threads['parentPort'];
+  parentPort.on('message', (msg) => global.onmessage?.({ data: msg }));
+  Object.assign(globalThis, {
+    self: global,
+    postMessage: (msg) => parentPort['postMessage'](msg),
+  });
+}
+
+// include: wasm_worker.js
+/**
+ * Called once the intiial message has been recieved from the creating thread.
+ * The `props` object is the list of properties sent via postMessage to create
+ * the worker.
+ *
+ * This function is called both in normal wasm workers and in audio worklets.
+ */
+function startWasmWorker(props) {
+  /** @suppress {checkTypes} */
+  Object.assign(Module, props);
+  wasmMemory = props['mem'];
+  updateMemoryViews();
+  wasmModuleReceived(props['wasm']);
+  // Drop now unneeded references to from the Module object in this Worker,
+  // these are not needed anymore.
+  props['wasm'] = props['mem'] = 0;
+}
+
+if (ENVIRONMENT_IS_WASM_WORKER) {
+
+// Node.js support
+if (ENVIRONMENT_IS_NODE) {
+  // Weak map of handle functions to their wrapper. Used to implement
+  // addEventListener/removeEventListener.
+  var wrappedHandlers = new WeakMap();
+  function wrapMsgHandler(h) {
+    var f = wrappedHandlers.get(h)
+    if (!f) {
+      f = (msg) => h({data: msg});
+      wrappedHandlers.set(h, f);
+    }
+    return f;
+  }
+
+  Object.assign(globalThis, {
+    addEventListener: (name, handler) => parentPort['on'](name, wrapMsgHandler(handler)),
+    removeEventListener: (name, handler) => parentPort['off'](name, wrapMsgHandler(handler)),
+  });
+}
+
+onmessage = (d) => {
+  // The first message sent to the Worker is always the bootstrap message.
+  // Drop this message listener, it served its purpose of bootstrapping
+  // the Wasm Module load, and is no longer needed. Let user code register
+  // any desired message handlers from now on.
+  /** @suppress {checkTypes} */
+  onmessage = null;
+  startWasmWorker(d.data);
+}
+
+}
+// end include: wasm_worker.js
 
 
 function updateMemoryViews() {
@@ -469,6 +586,35 @@ function updateMemoryViews() {
 assert(typeof Int32Array != 'undefined' && typeof Float64Array !== 'undefined' && Int32Array.prototype.subarray != undefined && Int32Array.prototype.set != undefined,
        'JS engine does not provide full typed array support');
 
+// In non-standalone/normal mode, we create the memory here.
+// include: runtime_init_memory.js
+// Create the wasm memory. (Note: this only applies if IMPORTED_MEMORY is defined)
+
+// check for full engine support (use string 'subarray' to avoid closure compiler confusion)
+
+function initMemory() {
+  if ((ENVIRONMENT_IS_WASM_WORKER)) { return }
+
+  if (Module['wasmMemory']) {
+    wasmMemory = Module['wasmMemory'];
+  } else
+  {
+    var INITIAL_MEMORY = Module['INITIAL_MEMORY'] || 268435456;
+
+    assert(INITIAL_MEMORY >= 65536, 'INITIAL_MEMORY should be larger than STACK_SIZE, was ' + INITIAL_MEMORY + '! (STACK_SIZE=' + 65536 + ')');
+    /** @suppress {checkTypes} */
+    wasmMemory = new WebAssembly.Memory({
+      'initial': INITIAL_MEMORY / 65536,
+      'maximum': INITIAL_MEMORY / 65536,
+      'shared': true,
+    });
+  }
+
+  updateMemoryViews();
+}
+
+// end include: runtime_init_memory.js
+
 function preRun() {
   if (Module['preRun']) {
     if (typeof Module['preRun'] == 'function') Module['preRun'] = [Module['preRun']];
@@ -485,6 +631,8 @@ function preRun() {
 function initRuntime() {
   assert(!runtimeInitialized);
   runtimeInitialized = true;
+
+  if (ENVIRONMENT_IS_WASM_WORKER) return _wasmWorkerInitializeRuntime();
 
   checkStackCookie();
 
@@ -503,7 +651,7 @@ function preMain() {
 function exitRuntime() {
   assert(!runtimeExited);
   checkStackCookie();
-   // PThreads reuse the runtime from the main thread.
+  if ((ENVIRONMENT_IS_WASM_WORKER)) { return; } // PThreads reuse the runtime from the main thread.
   ___funcs_on_exit(); // Native atexit() functions
   // Begin ATEXITS hooks
   flush_NO_FILESYSTEM()
@@ -513,7 +661,7 @@ function exitRuntime() {
 
 function postRun() {
   checkStackCookie();
-   // PThreads reuse the runtime from the main thread.
+  if ((ENVIRONMENT_IS_WASM_WORKER)) { return; } // PThreads reuse the runtime from the main thread.
 
   if (Module['postRun']) {
     if (typeof Module['postRun'] == 'function') Module['postRun'] = [Module['postRun']];
@@ -745,6 +893,7 @@ async function instantiateAsync(binary, binaryFile, imports) {
 }
 
 function getWasmImports() {
+  assignWasmImports();
   // prepare imports
   return {
     'env': wasmImports,
@@ -764,11 +913,12 @@ async function createWasm() {
 
     
 
-    wasmMemory = wasmExports['memory'];
+    wasmTable = wasmExports['__indirect_function_table'];
     
-    assert(wasmMemory, 'memory not found in wasm exports');
-    updateMemoryViews();
+    assert(wasmTable, 'table not found in wasm exports');
 
+    // We now have the Wasm module loaded up, keep a reference to the compiled module so we can post it to the workers.
+    wasmModule = module;
     removeRunDependency('wasm-instantiate');
     return wasmExports;
   }
@@ -785,9 +935,7 @@ async function createWasm() {
     // receiveInstance() will swap in the exports (to Module.asm) so they can be called
     assert(Module === trueModule, 'the Module object should not be replaced during async compilation - perhaps the order of HTML elements is wrong?');
     trueModule = null;
-    // TODO: Due to Closure regression https://github.com/google/closure-compiler/issues/3193, the above line no longer optimizes out down to the following line.
-    // When the regression is fixed, can restore the above PTHREADS-enabled path.
-    return receiveInstance(result['instance']);
+    return receiveInstance(result['instance'], result['module']);
   }
 
   var info = getWasmImports();
@@ -811,6 +959,17 @@ async function createWasm() {
     });
   }
 
+  if ((ENVIRONMENT_IS_WASM_WORKER)) {
+    return new Promise((resolve) => {
+      wasmModuleReceived = (module) => {
+        // Instantiate from the module posted from the main thread.
+        // We can just use sync instantiation in the worker.
+        var instance = new WebAssembly.Instance(module, getWasmImports());
+        resolve(receiveInstance(instance, module));
+      };
+    });
+  }
+
   wasmBinaryFile ??= findWasmBinary();
     var result = await instantiateAsync(wasmBinary, wasmBinaryFile, info);
     var exports = receiveInstantiationResult(result);
@@ -829,6 +988,138 @@ async function createWasm() {
         this.status = status;
       }
     }
+
+  var _wasmWorkerDelayedMessageQueue = [];
+  
+  var handleException = (e) => {
+      // Certain exception types we do not treat as errors since they are used for
+      // internal control flow.
+      // 1. ExitStatus, which is thrown by exit()
+      // 2. "unwind", which is thrown by emscripten_unwind_to_js_event_loop() and others
+      //    that wish to return to JS event loop.
+      if (e instanceof ExitStatus || e == 'unwind') {
+        return EXITSTATUS;
+      }
+      checkStackCookie();
+      if (e instanceof WebAssembly.RuntimeError) {
+        if (_emscripten_stack_get_current() <= 0) {
+          err('Stack overflow detected.  You can try increasing -sSTACK_SIZE (currently set to 65536)');
+        }
+      }
+      quit_(1, e);
+    };
+  
+  
+  var runtimeKeepaliveCounter = 0;
+  var keepRuntimeAlive = () => noExitRuntime || runtimeKeepaliveCounter > 0;
+  var _proc_exit = (code) => {
+      EXITSTATUS = code;
+      if (!keepRuntimeAlive()) {
+        Module['onExit']?.(code);
+        ABORT = true;
+      }
+      quit_(code, new ExitStatus(code));
+    };
+  
+  
+  /** @suppress {duplicate } */
+  /** @param {boolean|number=} implicit */
+  var exitJS = (status, implicit) => {
+      EXITSTATUS = status;
+  
+      if (!keepRuntimeAlive()) {
+        exitRuntime();
+      }
+  
+      // if exit() was called explicitly, warn the user if the runtime isn't actually being shut down
+      if (keepRuntimeAlive() && !implicit) {
+        var msg = `program exited (with status: ${status}), but keepRuntimeAlive() is set (counter=${runtimeKeepaliveCounter}) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)`;
+        err(msg);
+      }
+  
+      _proc_exit(status);
+    };
+  var _exit = exitJS;
+  
+  
+  var maybeExit = () => {
+      if (runtimeExited) {
+        return;
+      }
+      if (!keepRuntimeAlive()) {
+        try {
+          _exit(EXITSTATUS);
+        } catch (e) {
+          handleException(e);
+        }
+      }
+    };
+  var callUserCallback = (func) => {
+      if (runtimeExited || ABORT) {
+        err('user callback triggered after runtime exited or application aborted.  Ignoring.');
+        return;
+      }
+      try {
+        func();
+        maybeExit();
+      } catch (e) {
+        handleException(e);
+      }
+    };
+  
+  var wasmTableMirror = [];
+  
+  /** @type {WebAssembly.Table} */
+  var wasmTable;
+  var getWasmTableEntry = (funcPtr) => {
+      var func = wasmTableMirror[funcPtr];
+      if (!func) {
+        /** @suppress {checkTypes} */
+        wasmTableMirror[funcPtr] = func = wasmTable.get(funcPtr);
+      }
+      /** @suppress {checkTypes} */
+      assert(wasmTable.get(funcPtr) == func, 'JavaScript-side Wasm function table mirror is out of date!');
+      return func;
+    };
+  var _wasmWorkerRunPostMessage = (e) => {
+      // '_wsc' is short for 'wasm call', trying to use an identifier name that
+      // will never conflict with user code
+      let data = e.data;
+      let wasmCall = data['_wsc'];
+      wasmCall && callUserCallback(() => getWasmTableEntry(wasmCall)(...data['x']));
+    };
+  
+  var _wasmWorkerAppendToQueue = (e) => {
+      _wasmWorkerDelayedMessageQueue.push(e);
+    };
+  
+  var _wasmWorkerInitializeRuntime = () => {
+      let m = Module;
+      assert(m && m['$ww']);
+      assert(m['sb'] % 16 == 0);
+      assert(m['sz'] % 16 == 0);
+  
+      // Wasm workers basically never exit their runtime
+      noExitRuntime = 1;
+  
+      // Run the C side Worker initialization for stack and TLS.
+      __emscripten_wasm_worker_initialize(m['sb'], m['sz']);
+  
+      // Write the stack cookie last, after we have set up the proper bounds and
+      // current position of the stack.
+      writeStackCookie();
+  
+        // The Wasm Worker runtime is now up, so we can start processing
+        // any postMessage function calls that have been received. Drop the temp
+        // message handler that queued any pending incoming postMessage function calls ...
+        removeEventListener('message', _wasmWorkerAppendToQueue);
+        // ... then flush whatever messages we may have already gotten in the queue,
+        //     and clear _wasmWorkerDelayedMessageQueue to undefined ...
+        _wasmWorkerDelayedMessageQueue = _wasmWorkerDelayedMessageQueue.forEach(_wasmWorkerRunPostMessage);
+        // ... and finally register the proper postMessage handler that immediately
+        // dispatches incoming function calls without queueing them.
+        addEventListener('message', _wasmWorkerRunPostMessage);
+    };
 
   var callRuntimeCallbacks = (callbacks) => {
       while (callbacks.length > 0) {
@@ -928,7 +1219,7 @@ async function createWasm() {
       while (heapOrArray[endPtr] && !(endPtr >= endIdx)) ++endPtr;
   
       if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
-        return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
+        return UTF8Decoder.decode(heapOrArray.buffer instanceof ArrayBuffer ? heapOrArray.subarray(idx, endPtr) : heapOrArray.slice(idx, endPtr));
       }
       var str = '';
       // If building with TextDecoder, we have already computed the string length
@@ -979,6 +1270,24 @@ async function createWasm() {
       assert(typeof ptr == 'number', `UTF8ToString expects a number (got ${typeof ptr})`);
       return ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead) : '';
     };
+  var ___assert_fail = (condition, filename, line, func) =>
+      abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : 'unknown filename', line, func ? UTF8ToString(func) : 'unknown function']);
+
+  var __abort_js = () =>
+      abort('native code called abort()');
+
+  var _emscripten_get_now = () => performance.now();
+
+  var abortOnCannotGrowMemory = (requestedSize) => {
+      abort(`Cannot enlarge memory arrays to size ${requestedSize} bytes (OOM). Either (1) compile with -sINITIAL_MEMORY=X with X higher than the current value ${HEAP8.length}, (2) compile with -sALLOW_MEMORY_GROWTH which allows increasing the size at runtime, or (3) if you want malloc to return NULL (0) instead of this abort, compile with -sABORTING_MALLOC=0`);
+    };
+  var _emscripten_resize_heap = (requestedSize) => {
+      var oldSize = HEAPU8.length;
+      // With CAN_ADDRESS_2GB or MEMORY64, pointers are already unsigned.
+      requestedSize >>>= 0;
+      abortOnCannotGrowMemory(requestedSize);
+    };
+
   var SYSCALLS = {
   varargs:undefined,
   getStr(ptr) {
@@ -1039,53 +1348,7 @@ async function createWasm() {
       return 0;
     };
 
-  
-  var runtimeKeepaliveCounter = 0;
-  var keepRuntimeAlive = () => noExitRuntime || runtimeKeepaliveCounter > 0;
-  var _proc_exit = (code) => {
-      EXITSTATUS = code;
-      if (!keepRuntimeAlive()) {
-        Module['onExit']?.(code);
-        ABORT = true;
-      }
-      quit_(code, new ExitStatus(code));
-    };
-  
-  
-  /** @param {boolean|number=} implicit */
-  var exitJS = (status, implicit) => {
-      EXITSTATUS = status;
-  
-      if (!keepRuntimeAlive()) {
-        exitRuntime();
-      }
-  
-      // if exit() was called explicitly, warn the user if the runtime isn't actually being shut down
-      if (keepRuntimeAlive() && !implicit) {
-        var msg = `program exited (with status: ${status}), but keepRuntimeAlive() is set (counter=${runtimeKeepaliveCounter}) due to an async operation, so halting execution but not exiting the runtime or preventing further async execution (you can use emscripten_force_exit, if you want to force a true shutdown)`;
-        err(msg);
-      }
-  
-      _proc_exit(status);
-    };
 
-  var handleException = (e) => {
-      // Certain exception types we do not treat as errors since they are used for
-      // internal control flow.
-      // 1. ExitStatus, which is thrown by exit()
-      // 2. "unwind", which is thrown by emscripten_unwind_to_js_event_loop() and others
-      //    that wish to return to JS event loop.
-      if (e instanceof ExitStatus || e == 'unwind') {
-        return EXITSTATUS;
-      }
-      checkStackCookie();
-      if (e instanceof WebAssembly.RuntimeError) {
-        if (_emscripten_stack_get_current() <= 0) {
-          err('Stack overflow detected.  You can try increasing -sSTACK_SIZE (currently set to 65536)');
-        }
-      }
-      quit_(1, e);
-    };
 
   var lengthBytesUTF8 = (str) => {
       var len = 0;
@@ -1174,6 +1437,9 @@ async function createWasm() {
 // but before the wasm module is created.
 
 {
+  // With WASM_ESM_INTEGRATION this has to happen at the top level and not
+  // delayed until processModuleArgs.
+  initMemory();
 
   // Begin ATMODULES hooks
   if (Module['noExitRuntime']) noExitRuntime = Module['noExitRuntime'];
@@ -1203,13 +1469,11 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   assert(typeof Module['TOTAL_MEMORY'] == 'undefined', 'Module.TOTAL_MEMORY has been renamed Module.INITIAL_MEMORY');
   assert(typeof Module['ENVIRONMENT'] == 'undefined', 'Module.ENVIRONMENT has been deprecated. To force the environment, use the ENVIRONMENT compile-time option (for example, -sENVIRONMENT=web or -sENVIRONMENT=node)');
   assert(typeof Module['STACK_SIZE'] == 'undefined', 'STACK_SIZE can no longer be set at runtime.  Use -sSTACK_SIZE at link time')
-  // If memory is defined in wasm, the user can't provide it, or set INITIAL_MEMORY
-  assert(typeof Module['wasmMemory'] == 'undefined', 'Use of `wasmMemory` detected.  Use -sIMPORTED_MEMORY to define wasmMemory externally');
-  assert(typeof Module['INITIAL_MEMORY'] == 'undefined', 'Detected runtime INITIAL_MEMORY setting.  Use -sIMPORTED_MEMORY to define wasmMemory dynamically');
 
 }
 
 // Begin runtime exports
+  Module['wasmMemory'] = wasmMemory;
   var missingLibrarySymbols = [
   'writeI53ToI64',
   'writeI53ToI64Clamped',
@@ -1225,7 +1489,6 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   'setTempRet0',
   'zeroMemory',
   'getHeapMax',
-  'abortOnCannotGrowMemory',
   'growMemory',
   'strError',
   'inetPton4',
@@ -1244,8 +1507,6 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   'dynCall',
   'runtimeKeepalivePush',
   'runtimeKeepalivePop',
-  'callUserCallback',
-  'maybeExit',
   'asmjsMangle',
   'asyncLoad',
   'alignMemory',
@@ -1393,6 +1654,10 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   'writeAsciiToMemory',
   'demangle',
   'stackTrace',
+  '_wasmWorkersID',
+  '_wasmWorkerPostFunction1',
+  '_wasmWorkerPostFunction2',
+  '_wasmWorkerPostFunction3',
 ];
 missingLibrarySymbols.forEach(missingLibrarySymbol)
 
@@ -1404,7 +1669,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'err',
   'callMain',
   'abort',
-  'wasmMemory',
   'wasmExports',
   'HEAPF32',
   'HEAPF64',
@@ -1426,6 +1690,7 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'stackAlloc',
   'ptrToString',
   'exitJS',
+  'abortOnCannotGrowMemory',
   'ENV',
   'ERRNO_CODES',
   'DNS',
@@ -1436,6 +1701,8 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'readEmAsmArgsArray',
   'handleException',
   'keepRuntimeAlive',
+  'callUserCallback',
+  'maybeExit',
   'wasmTable',
   'noExitRuntime',
   'addOnPreRun',
@@ -1616,6 +1883,11 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'print',
   'printErr',
   'jstoi_s',
+  '_wasmWorkers',
+  '_wasmWorkerDelayedMessageQueue',
+  '_wasmWorkerAppendToQueue',
+  '_wasmWorkerRunPostMessage',
+  '_wasmWorkerInitializeRuntime',
 ];
 unexportedSymbols.forEach(unexportedRuntimeSymbol);
 
@@ -1629,25 +1901,40 @@ function checkIncomingModuleAPI() {
   ignoredModuleProp('fetchSettings');
 }
 function js_call_init_comm() { if (typeof Module._mpi_internal_init_world_comm === "function") { Module._mpi_internal_init_world_comm(Module.rank, Module.size); } else { console.error("[ERR] mpi_internal_init_world_comm not found"); } }
-function js_mpi_send_eager(ptr,dest,tag,commId,size) { const buf = HEAPU8.slice(ptr, ptr + size); postMessage({ type: "mpi-send-eager", dest, tag, commId, payload: buf, }); }
-function js_mpi_recv(bufPtr,count,datatypeId,src,tag,commId,statusPtr,bufBytes) { const sab = Module.eagerSab; const HEADER_SIZE = Module.HEADER_SIZE; const PAYLOAD_SIZE = Module.PAYLOAD_SIZE; const ctlView = new Int32Array(sab, 0, 1); const lenView = new Int32Array(sab, 4, 1); const metaView = new Int32Array(sab, 8, 6); const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE); const EMPTY = 0; const FULL = 1; postMessage({ type: "mpi-recv", src, tag, commId, }); Atomics.wait(ctlView, 0, EMPTY); const len = Atomics.load(lenView, 0); const realSrc = Atomics.load(metaView, 0); const realTag = Atomics.load(metaView, 1); const realLen = Math.min(len, bufBytes); const base = statusPtr / 4; if (statusPtr) { HEAP32[base + 0] = realLen; HEAP32[base + 1] = realSrc; HEAP32[base + 2] = realTag; HEAP32[base + 3] = 0; } HEAPU8.set(dataView.subarray(0, realLen), bufPtr); Atomics.store(ctlView, 0, EMPTY); Atomics.notify(ctlView, 0, 1); }
+function js_mpi_wait(requestPtr,statusPtr) { }
+function js_mpi_send_eager(bufPtr,dest,tag,commId,bufSize,ctlPtr) { postMessage({ type: "mpi-send-eager", dest, tag, commId, bufSize, bufPtr, ctlPtr, }); const WAITING = 0; const READY = 1; const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1); while(Atomics.load(ctlView, 0) === WAITING) { Atomics.wait(ctlView, 0, WAITING); } }
+function js_mpi_isend_eager(ptr,dest,tag,commId,bufSize,requestPtr) { const requestId = requestPtr; }
+function js_mpi_recv(bufPtr,src,tag,commId,statusPtr,bufSize,ctlPtr) { postMessage({ type: "mpi-recv", src, tag, commId, bufSize, bufPtr, ctlPtr, statusPtr, }); const WAITING = 0; const READY = 1; const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1); while (Atomics.load(ctlView, 0) === WAITING) { Atomics.wait(ctlView, 0, WAITING); } }
 function js_mpi_finalize() { postMessage({ type: "mpi-finalize", }); }
-var wasmImports = {
-  /** @export */
-  fd_close: _fd_close,
-  /** @export */
-  fd_seek: _fd_seek,
-  /** @export */
-  fd_write: _fd_write,
-  /** @export */
-  js_call_init_comm,
-  /** @export */
-  js_mpi_finalize,
-  /** @export */
-  js_mpi_recv,
-  /** @export */
-  js_mpi_send_eager
-};
+var wasmImports;
+function assignWasmImports() {
+  wasmImports = {
+    /** @export */
+    __assert_fail: ___assert_fail,
+    /** @export */
+    _abort_js: __abort_js,
+    /** @export */
+    emscripten_get_now: _emscripten_get_now,
+    /** @export */
+    emscripten_resize_heap: _emscripten_resize_heap,
+    /** @export */
+    fd_close: _fd_close,
+    /** @export */
+    fd_seek: _fd_seek,
+    /** @export */
+    fd_write: _fd_write,
+    /** @export */
+    js_call_init_comm,
+    /** @export */
+    js_mpi_finalize,
+    /** @export */
+    js_mpi_recv,
+    /** @export */
+    js_mpi_send_eager,
+    /** @export */
+    memory: wasmMemory
+  };
+}
 var wasmExports;
 createWasm();
 var ___wasm_call_ctors = createExportWrapper('__wasm_call_ctors', 0);
@@ -1655,14 +1942,15 @@ var _main = Module['_main'] = createExportWrapper('__main_argc_argv', 2);
 var _mpi_internal_init_world_comm = Module['_mpi_internal_init_world_comm'] = createExportWrapper('mpi_internal_init_world_comm', 2);
 var _fflush = createExportWrapper('fflush', 1);
 var ___funcs_on_exit = createExportWrapper('__funcs_on_exit', 0);
-var _strerror = createExportWrapper('strerror', 1);
 var _emscripten_stack_get_end = () => (_emscripten_stack_get_end = wasmExports['emscripten_stack_get_end'])();
 var _emscripten_stack_get_base = () => (_emscripten_stack_get_base = wasmExports['emscripten_stack_get_base'])();
+var _strerror = createExportWrapper('strerror', 1);
 var _emscripten_stack_init = () => (_emscripten_stack_init = wasmExports['emscripten_stack_init'])();
 var _emscripten_stack_get_free = () => (_emscripten_stack_get_free = wasmExports['emscripten_stack_get_free'])();
 var __emscripten_stack_restore = (a0) => (__emscripten_stack_restore = wasmExports['_emscripten_stack_restore'])(a0);
 var __emscripten_stack_alloc = (a0) => (__emscripten_stack_alloc = wasmExports['_emscripten_stack_alloc'])(a0);
 var _emscripten_stack_get_current = () => (_emscripten_stack_get_current = wasmExports['emscripten_stack_get_current'])();
+var __emscripten_wasm_worker_initialize = createExportWrapper('_emscripten_wasm_worker_initialize', 2);
 
 
 // include: postamble.js
@@ -1712,6 +2000,11 @@ function run(args = arguments_) {
 
   if (runDependencies > 0) {
     dependenciesFulfilled = run;
+    return;
+  }
+
+  if ((ENVIRONMENT_IS_WASM_WORKER)) {
+    initRuntime();
     return;
   }
 

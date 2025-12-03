@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <emscripten.h>
 
+const int WAITING = 0;
+const int READY = 1;
+
 // 通信定義
 // TODO 自作コミュニケータに対応させる．
 MPI_Comm MPI_COMM_WORLD;
@@ -63,217 +66,188 @@ int MPI_Wait(MPI_Request *request, MPI_Status *status) {
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_send_eager, (intptr_t ptr, int dest, int tag, int commId, int size), {
-    // HEAP8はwasmのメモリに張られたビュー．
-    // それを新しいarraybufferにコピーしてそれに張られたUint8Array(=buf)を作成
-    // buf.bufferがarraybufferそのもの．
-    // bufはUint8Array（ビュー）
-    const buf = HEAPU8.slice(ptr, ptr + size);
-    // OPTIMIZE 以下を参考にコピーではなく移譲にする．（現状2回コピーが発生している．）
-    // 論文：オーバーヘッドを比較する．
-    // https://qiita.com/Quramy/items/8c12e6c3ad208c97c99a
+EM_JS(void, js_mpi_send_eager, (intptr_t bufPtr, int dest, int tag, int commId, int bufSize, intptr_t ctlPtr), {
     postMessage({
         type: "mpi-send-eager",
         dest,
         tag,
         commId,
-        payload: buf,
+        bufSize,
+        bufPtr,
+        ctlPtr,
     });
+
+    const WAITING = 0;
+    const READY = 1;
+
+    const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1);
+
+    while(Atomics.load(ctlView, 0) === WAITING) {
+        Atomics.wait(ctlView, 0, WAITING);
+    }
 });
 
-int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
-    intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
-    int buf_bytes = count * mpi_get_size(datatype);
-    js_mpi_send_eager(ptr, dest, tag, comm.commId, buf_bytes);
+int MPI_Send(const void *buf_ptr, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
+    int buf_size = count * mpi_get_size(datatype);
+
+    int32_t *ctl_ptr = (int32_t*)malloc(sizeof(int32_t));
+    if(ctl_ptr == NULL) return MPI_ERR_NO_MEM;
+    *ctl_ptr = WAITING; // WAITINGで初期化
+
+    js_mpi_send_eager((intptr_t)buf_ptr, dest, tag, comm.commId, buf_size, (intptr_t)(ctl_ptr));
+    free(ctl_ptr);
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_isend_eager, (intptr_t ptr, int dest, int tag, int commId, int size, intptr_t requestPtr), {
-    const buf = HEAPU8.slice(ptr, ptr + size);
+EM_JS(void, js_mpi_isend_eager, (intptr_t ptr, int dest, int tag, int commId, int bufSize, intptr_t requestPtr), {
     const requestId = requestPtr; // リクエスト識別子としてポインタを使用
-    // 受け取り側未実装
-    postMessage({
-        type: "mpi-isend-eager",
-        dest,
-        tag,
-        commId,
-        payload: buf,
-        requestId,
-    });
 });
 
 int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request *request) {
-    intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
-    intptr_t request_ptr = (intptr_t)(request);
-    int buf_bytes = count * mpi_get_size(datatype);
-    js_mpi_isend_eager(ptr, dest, tag, comm.commId, buf_bytes, request_ptr);
+    // intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
+    // intptr_t request_ptr = (intptr_t)(request);
+    // int buf_size = count * mpi_get_size(datatype);
+    // js_mpi_isend_eager(ptr, dest, tag, comm.commId, buf_size, request_ptr);
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_recv, (intptr_t bufPtr, int count, int datatypeId, int src, int tag, int commId, intptr_t statusPtr, int bufBytes), {
-    const sab = Module.eagerSab;
-    const HEADER_SIZE = Module.HEADER_SIZE;
-    const PAYLOAD_SIZE = Module.PAYLOAD_SIZE;
-
-    // ブロッキング用Worker制御用（EMPTY = 0, FULL = 1）
-    const ctlBlockingWorkerView = new Int32Array(sab, 0, 1);
-    // ノンブロッキング用Worker制御用（EMPTY = 0, FULL = 1）
-    const ctlNonBlockingWorkerView = new Int32Array(sab, 4, 1);
-    // router制御用（EMPTY = 0, FULL = 1）
-    const ctlRouterView = new Int32Array(sab, 8, 1);
-    // ノンブロッキング用RequestId伝達用
-    const requestIdView = new Uint32Array(sab, 12, 1);
-    const lenView = new Int32Array(sab, 16, 1); // length            
-    const metaView = new Int32Array(sab, 20, 3); // src, tag, commId,
-    const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE); // データ領域
-
-    const EMPTY = 0;
-    const FULL = 1;
-
+EM_JS(void, js_mpi_recv, (intptr_t bufPtr, int src, int tag, int commId, intptr_t statusPtr, int bufSize, intptr_t ctlPtr), {
     postMessage({
         type: "mpi-recv",
         src,
         tag,
         commId,
+        bufSize,
+        bufPtr,
+        ctlPtr,
+        statusPtr,
     });
 
+    const WAITING = 0;
+    const READY = 1;
+
+    const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1);
+
     // 受信完了まで待機
-    while (Atomics.load(ctlBlockingWorkerView, 0) === EMPTY) {
-        Atomics.wait(ctlBlockingWorkerView, 0, EMPTY);
+    // C側でemscripten_futex_waitを使う方法もある（どちらでも良い）
+    while (Atomics.load(ctlView, 0) === WAITING) {
+        Atomics.wait(ctlView, 0, WAITING);
     }
-
-    const len = Atomics.load(lenView, 0);
-    const realSrc = Atomics.load(metaView, 0);
-    const realTag = Atomics.load(metaView, 1);
-    
-    const realLen = Math.min(len, bufBytes);
-
-    // ステータス情報を設定
-    const base = statusPtr / 4;
-    if (statusPtr) {
-        HEAP32[base + 0] = realLen;
-        HEAP32[base + 1] = realSrc;
-        HEAP32[base + 2] = realTag;
-        HEAP32[base + 3] = 0; // MPI_SUCCESS
-    }
-
-    // 受信データをWASMメモリにコピー
-    HEAPU8.set(dataView.subarray(0, realLen), bufPtr);
-
-    // 受信完了したらEMPTYに戻してSABが開いたことを通知
-    Atomics.store(ctlBlockingWorkerView, 0, EMPTY);
-    Atomics.store(ctlNonBlockingWorkerView, 0, EMPTY);
-    Atomics.store(ctlRouterView, 0, EMPTY);
-    Atomics.notify(ctlRouterView, 0, 1);
 });
 
 // TODO MPI_Status必要
-int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Status *status) {
-    intptr_t buf_ptr = (intptr_t)(buf);  // wasm上のアドレスを取得
-    intptr_t status_ptr = (intptr_t)(status);
-    int buf_bytes = count * mpi_get_size(datatype);
-    js_mpi_recv(buf_ptr, count, datatype, src, tag, comm.commId, status_ptr, buf_bytes);
+int MPI_Recv(void *buf_ptr, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Status *status_ptr) {
+    int buf_size = count * mpi_get_size(datatype);
+
+    int32_t *ctl_ptr = (int32_t*)malloc(sizeof(int32_t));
+    if(ctl_ptr == NULL) return MPI_ERR_NO_MEM;
+    *ctl_ptr = WAITING; // WAITINGで初期化
+
+    js_mpi_recv((intptr_t)buf_ptr, src, tag, comm.commId, (intptr_t)status_ptr, buf_size, (intptr_t)(ctl_ptr));
+    free(ctl_ptr);
+
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_irecv, (intptr_t bufPtr, int count, int datatypeId, int src, int tag, int commId, intptr_t requestPtr, int bufBytes), {
-    const sab = Module.eagerSab;
-    const HEADER_SIZE = Module.HEADER_SIZE;
-    const PAYLOAD_SIZE = Module.PAYLOAD_SIZE;
+// EM_JS(void, js_mpi_irecv, (intptr_t bufPtr, int count, int datatypeId, int src, int tag, int commId, intptr_t requestPtr, int bufSize), {
+//     const sab = Module.eagerSab;
 
-    // ブロッキング用Worker制御用（EMPTY = 0, FULL = 1）
-    const ctlBlockingWorkerView = new Int32Array(sab, 0, 1);
-    // ノンブロッキング用Worker制御用（EMPTY = 0, FULL = 1）
-    const ctlNonBlockingWorkerView = new Int32Array(sab, 4, 1);
-    // 制御もブロッキング用とノンブロッキング用を分けないといけないかも
-    // 分けなくてよい．
-    // router制御用（EMPTY = 0, FULL = 1）
-    const ctlRouterView = new Int32Array(sab, 8, 1);
-    // ノンブロッキング用RequestId伝達用
-    const requestIdView = new Uint32Array(sab, 12, 1);
-    const lenView = new Int32Array(sab, 16, 1); // length            
-    const metaView = new Int32Array(sab, 20, 3); // src, tag, commId,
-    const dataView = new Uint8Array(sab, HEADER_SIZE, PAYLOAD_SIZE); // データ領域
+//     const WAITING = 0;
+//     const READY = 1;
 
-    const EMPTY = 0;
-    const FULL = 1;
+//     const requestId = requestPtr; // リクエスト識別子としてポインタを使用
 
-    const requestId = requestPtr; // リクエスト識別子としてポインタを使用
+//     postMessage({
+//         type: "mpi-irecv",
+//         src,
+//         tag,
+//         commId,
+//         requestId,
+//     });
 
-    postMessage({
-        type: "mpi-irecv",
-        src,
-        tag,
-        commId,
-        requestId,
-    });
+//     console.log("[mpi-irecv] wait start for requestId:", requestId);
 
-    console.log("[mpi-irecv] wait start for requestId:", requestId);
+//     (async () => {
+//         while (true) {
+//             while (Atomics.load(ctlNonBlockingWorkerView, 0) === WAITING) {
+//                 const result = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, WAITING);
+//                 if (result.async) {
+//                     console.log("[mpi-irecv] 待機中...", requestId);
+//                     await result.value; // WAITINGの間は待機
+//                 }
+//             }
 
-    (async () => {
-        while (true) {
-            const result = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, EMPTY);
-            console.log("[mpi-irecv] waitAsync result:", result);
-            if(!result.async) { // FULLの場合
-                // requestIdとrequestIdViewを比較して，一致したら処理を進める
-                // 一致しなければ待機を継続
-                const currentRequestId = Atomics.load(requestIdView, 0);
-                console.log("[mpi-irecv] currentRequestId:", currentRequestId, " requestId:", requestId);
-                // 自分あてだった場合ループを抜けて処理を行う
-                if (currentRequestId === requestId) {
-                    break;
-                }
-                // 自分宛ではなかった場合EMPTYに戻さずに再度待機
-                while (Atomics.load(ctlNonBlockingWorkerView, 0) === FULL) {
-                    const result2 = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, FULL);
-                    if (result2.async) {
-                        console.log("[mpi-irecv] 再待機 waitAsync result:", result2);
-                        await result2.value; // 誰かがEMPTYにするまでsleep
-                        console.log("[mpi-irecv] 再待機から復帰");
-                    } 
-                }
-            }
-            console.log("到達確認0");
-            await result.value; // EMPTYの場合は待機
-        }
-        console.log("到達確認1");
+//             // ここに来た時点でFULLになっている
+//             // 自分宛かどうかを確認する
+//             const currentRequestId = Atomics.load(requestIdView, 0);
+//             console.log("[mpi-irecv] currentRequestId:", currentRequestId, " requestId:", requestId);
+//             if (currentRequestId === requestId) {
+//                 break; // 自分宛だった場合ループを抜けて処理を行う
+//             }
 
-        const len = Atomics.load(lenView, 0);
-        const realSrc = Atomics.load(metaView, 0);
-        const realTag = Atomics.load(metaView, 1);
+//             const result2 = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, READY);
+//             if (result2.async) {
+//                 console.log("[mpi-irecv] 自分宛ではなかったため再待機 waitAsync result:", requestId);
+//                 await result2.value;
+//                 console.log("[mpi-irecv] 再待機から復帰", requestId);
+//             } 
+
+//             // 自分宛ではなかった場合WAITINGに戻さずに再度待機
+//             // while (Atomics.load(ctlNonBlockingWorkerView, 0) === READY) {
+//             //     const result2 = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, READY);
+//             //     if (result2.async) {
+//             //         console.log("[mpi-irecv] 再待機 waitAsync result:", result2);
+//             //         await result2.value; // 誰かがWAITINGにするまでsleep
+//             //         console.log("[mpi-irecv] 再待機から復帰");
+//             //     } 
+//             // }
+//         }
+//         console.log("到達確認1");
+
+//         const len = Atomics.load(lenView, 0);
+//         const realSrc = Atomics.load(metaView, 0);
+//         const realTag = Atomics.load(metaView, 1);
         
-        const realLen = Math.min(len, bufBytes);
+//         const realLen = Math.min(len, bufSize);
 
-        // ステータス情報を設定
-        const base = requestPtr / 4;
-        if (requestPtr) {
-            HEAP32[base + 0] = requestId;
-            HEAP32[base + 1] = 1;
-            HEAP32[base + 2] = realLen;
-            HEAP32[base + 3] = realSrc;
-            HEAP32[base + 4] = realTag;
-        }
+//         // console.log("bufPtr    =", bufPtr);
+//         // console.log("requestPtr=", requestPtr);
+//         // console.log("bufPtr/4  =", bufPtr / 4);
+//         // console.log("requestPtr/4 =", requestPtr / 4);
 
-        console.log("到達確認2");
 
-        // 受信データをWASMメモリにコピー
-        HEAPU8.set(dataView.subarray(0, realLen), bufPtr);
+//         // ステータス情報を設定
+//         const base = requestPtr / 4;
+//         if (requestPtr) {
+//             HEAP32[base + 0] = requestId;
+//             HEAP32[base + 1] = 1;
+//             HEAP32[base + 2] = realLen;
+//             HEAP32[base + 3] = realSrc;
+//             HEAP32[base + 4] = realTag;
+//         }
 
-        // 受信完了したらEMPTYに戻してSABが開いたことを通知
-        Atomics.store(ctlBlockingWorkerView, 0, EMPTY);
-        Atomics.store(ctlNonBlockingWorkerView, 0, EMPTY);
-        Atomics.store(ctlRouterView, 0, EMPTY);
-        Atomics.notify(ctlNonBlockingWorkerView, 0); // ノンブロッキングwaitを起こす
-        Atomics.notify(ctlRouterView, 0, 1);
-        console.log("到達確認3");
-    })();
-});
+//         console.log("到達確認2");
+
+//         // 受信データをWASMメモリにコピー
+//         HEAPU8.set(dataView.subarray(0, realLen), bufPtr);
+
+//         // 受信完了したらWAITINGに戻してSABが開いたことを通知
+//         Atomics.store(ctlBlockingWorkerView, 0, WAITING);
+//         Atomics.store(ctlNonBlockingWorkerView, 0, WAITING);
+//         Atomics.store(ctlRouterView, 0, WAITING);
+//         // const workerwake = Atomics.notify(ctlNonBlockingWorkerView, 0); // ノンブロッキングwaitを起こす
+//         Atomics.notify(ctlRouterView, 0, 1);
+//         console.log("到達確認3");
+//     })();
+// });
 
 int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Request *request) {
-    intptr_t buf_ptr = (intptr_t)(buf);  // wasm上のアドレスを取得
-    intptr_t request_ptr = (intptr_t)(request);
-    int buf_bytes = count * mpi_get_size(datatype);
-    js_mpi_irecv(buf_ptr, count, datatype, src, tag, comm.commId, request_ptr, buf_bytes);
+    // intptr_t buf_ptr = (intptr_t)(buf);  // wasm上のアドレスを取得
+    // intptr_t request_ptr = (intptr_t)(request);
+    // int buf_size = count * mpi_get_size(datatype);
+    // printf("MPI_Irecv called with buf_ptr: %ld, count: %d, datatype: %d, src: %d, tag: %d, commId: %d, request_ptr: %ld, buf_size: %d\n",
+    //        buf_ptr, count, datatype, src, tag, comm.commId, request_ptr, buf_size);
+    // js_mpi_irecv(buf_ptr, count, datatype, src, tag, comm.commId, request_ptr, buf_size);
     return MPI_SUCCESS;
 }
 
