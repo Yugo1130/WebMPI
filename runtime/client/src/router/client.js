@@ -66,7 +66,7 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
             }
         };
 
-        // initメッセージで事前にSABをworkerに渡す
+        // initメッセージで引数，割り当てられたrank，sizeをworkerに送信
         worker.postMessage({
             type: "init",
             args,
