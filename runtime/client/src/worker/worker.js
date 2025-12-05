@@ -1,26 +1,25 @@
 onmessage = (e) => {
     const type = e.data.type;
-    if (type == "init") {
+    if (type == "init") { // from router/client.js
         self.Module = {
             args: e.data.args, // mainに渡す引数（argc, argv）
             rank: e.data.rank,
             size: e.data.size,            
             locateFile: (path) => {
                 if (path.endsWith(".wasm")) {
-                    // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
-                    // REVIEW wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．しかし本当に動いてるか不明．
+                    // wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．
                     return "/wasm/" + path + "?v=" + Date.now();
                 }
                 return path;
             },
             // print: (text) => postMessage(text), // printfの出力先
             // printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
-            print: (text) => postMessage({
+            print: (text) => postMessage({ // to router/client.js
                 // printfの出力先
                 type: "standard-output",
                 text,
             }), 
-            printErr: (text) => postMessage({
+            printErr: (text) => postMessage({ // to router/client.js
                 //fprintfの出力先
                 type: "standard-error-output",
                 text,
@@ -30,7 +29,7 @@ onmessage = (e) => {
                 // SABとして確保したWASMメモリを取得
                 const wasmmemorySab = self.Module.wasmMemory.buffer;
 
-                postMessage({
+                postMessage({ // to router/client.js
                     type: "wasm-memory-sab-ready",
                     wasmmemorySab, // SABの参照を送信
                 });
@@ -42,6 +41,6 @@ onmessage = (e) => {
 
         // em++で生成したJSランタイム
         // 初期化処理やロード処理を行う．
-        importScripts("/wasm/sample.js?v=" + Date.now());
+        importScripts("/wasm/program.js?v=" + Date.now());
     }
 };

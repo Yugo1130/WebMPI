@@ -820,7 +820,7 @@ function createExportWrapper(name, nargs) {
 var wasmBinaryFile;
 
 function findWasmBinary() {
-    return locateFile('sample.wasm');
+    return locateFile('program.wasm');
 }
 
 function getBinarySync(file) {
@@ -1273,21 +1273,6 @@ async function createWasm() {
   var ___assert_fail = (condition, filename, line, func) =>
       abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : 'unknown filename', line, func ? UTF8ToString(func) : 'unknown function']);
 
-  var __abort_js = () =>
-      abort('native code called abort()');
-
-  var _emscripten_get_now = () => performance.now();
-
-  var abortOnCannotGrowMemory = (requestedSize) => {
-      abort(`Cannot enlarge memory arrays to size ${requestedSize} bytes (OOM). Either (1) compile with -sINITIAL_MEMORY=X with X higher than the current value ${HEAP8.length}, (2) compile with -sALLOW_MEMORY_GROWTH which allows increasing the size at runtime, or (3) if you want malloc to return NULL (0) instead of this abort, compile with -sABORTING_MALLOC=0`);
-    };
-  var _emscripten_resize_heap = (requestedSize) => {
-      var oldSize = HEAPU8.length;
-      // With CAN_ADDRESS_2GB or MEMORY64, pointers are already unsigned.
-      requestedSize >>>= 0;
-      abortOnCannotGrowMemory(requestedSize);
-    };
-
   var SYSCALLS = {
   varargs:undefined,
   getStr(ptr) {
@@ -1489,6 +1474,7 @@ Module['FS_createPreloadedFile'] = FS.createPreloadedFile;
   'setTempRet0',
   'zeroMemory',
   'getHeapMax',
+  'abortOnCannotGrowMemory',
   'growMemory',
   'strError',
   'inetPton4',
@@ -1690,7 +1676,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'stackAlloc',
   'ptrToString',
   'exitJS',
-  'abortOnCannotGrowMemory',
   'ENV',
   'ERRNO_CODES',
   'DNS',
@@ -1901,22 +1886,17 @@ function checkIncomingModuleAPI() {
   ignoredModuleProp('fetchSettings');
 }
 function js_call_init_comm() { if (typeof Module._mpi_internal_init_world_comm === "function") { Module._mpi_internal_init_world_comm(Module.rank, Module.size); } else { console.error("[ERR] mpi_internal_init_world_comm not found"); } }
-function js_mpi_wait(requestPtr,statusPtr) { }
+function js_mpi_wait(requestPtr,statusPtr) { const WAITING = 0; const requestView = new Int32Array(Module.wasmMemory.buffer, requestPtr, 5); while (Atomics.load(requestView, 1) === WAITING) { Atomics.wait(requestView, 1, WAITING); } const statusView = new Int32Array(Module.wasmMemory.buffer, statusPtr, 4); statusView[0] = requestView[2]; statusView[1] = requestView[3]; statusView[2] = requestView[4]; statusView[3] = 0; }
 function js_mpi_send_eager(bufPtr,dest,tag,commId,bufSize,ctlPtr) { postMessage({ type: "mpi-send-eager", dest, tag, commId, bufSize, bufPtr, ctlPtr, }); const WAITING = 0; const READY = 1; const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1); while(Atomics.load(ctlView, 0) === WAITING) { Atomics.wait(ctlView, 0, WAITING); } }
-function js_mpi_isend_eager(ptr,dest,tag,commId,bufSize,requestPtr) { const requestId = requestPtr; }
+function js_mpi_isend_eager(bufPtr,dest,tag,commId,bufSize,requestPtr) { postMessage({ type: "mpi-isend-eager", dest, tag, commId, bufSize, bufPtr, requestPtr, }); }
 function js_mpi_recv(bufPtr,src,tag,commId,statusPtr,bufSize,ctlPtr) { postMessage({ type: "mpi-recv", src, tag, commId, bufSize, bufPtr, ctlPtr, statusPtr, }); const WAITING = 0; const READY = 1; const ctlView = new Int32Array(Module.wasmMemory.buffer, ctlPtr, 1); while (Atomics.load(ctlView, 0) === WAITING) { Atomics.wait(ctlView, 0, WAITING); } }
+function js_mpi_irecv(bufPtr,src,tag,commId,requestPtr,bufSize) { postMessage({ type: "mpi-irecv", src, tag, commId, bufSize, bufPtr, requestPtr, }); }
 function js_mpi_finalize() { postMessage({ type: "mpi-finalize", }); }
 var wasmImports;
 function assignWasmImports() {
   wasmImports = {
     /** @export */
     __assert_fail: ___assert_fail,
-    /** @export */
-    _abort_js: __abort_js,
-    /** @export */
-    emscripten_get_now: _emscripten_get_now,
-    /** @export */
-    emscripten_resize_heap: _emscripten_resize_heap,
     /** @export */
     fd_close: _fd_close,
     /** @export */
@@ -1928,9 +1908,9 @@ function assignWasmImports() {
     /** @export */
     js_mpi_finalize,
     /** @export */
-    js_mpi_recv,
+    js_mpi_irecv,
     /** @export */
-    js_mpi_send_eager,
+    js_mpi_isend_eager,
     /** @export */
     memory: wasmMemory
   };

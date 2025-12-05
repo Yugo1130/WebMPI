@@ -4,9 +4,6 @@
 #include <stdint.h>
 #include <emscripten.h>
 
-const int WAITING = 0;
-const int READY = 1;
-
 // 通信定義
 // TODO 自作コミュニケータに対応させる．
 MPI_Comm MPI_COMM_WORLD;
@@ -54,15 +51,35 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank) {
 }
 
 EM_JS(void, js_mpi_wait, (intptr_t requestPtr, intptr_t statusPtr), {
-
+    const WAITING = 0;
+    const requestView = new Int32Array(Module.wasmMemory.buffer, requestPtr, 5); // isComplete
+    while (Atomics.load(requestView, 1) === WAITING) {
+        Atomics.wait(requestView, 1, WAITING);
+    }
+    // ステータス情報をコピー
+    const statusView = new Int32Array(Module.wasmMemory.buffer, statusPtr, 4);
+    statusView[0] = requestView[2]; // bytes
+    statusView[1] = requestView[3]; // MPI_SOURCE
+    statusView[2] = requestView[4]; // MPI_TAG
+    statusView[3] = 0; // MPI_ERROR
 });
 
 int MPI_Wait(MPI_Request *request, MPI_Status *status) {
-    // TODO 非同期通信の実装
-    intptr_t request_ptr = (intptr_t)(request);
-    intptr_t status_ptr = (intptr_t)(status);
-    js_mpi_wait(request_ptr, status_ptr);
-    request->isComplete = 1;
+    js_mpi_wait((intptr_t)request, (intptr_t)status);
+    return MPI_SUCCESS;
+}
+
+int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status) {
+    if (request->isComplete == READY) {
+        *flag = 1;
+        // ステータス情報をコピー
+        status->bytes = request->bytes;
+        status->MPI_SOURCE = request->MPI_SOURCE;
+        status->MPI_TAG = request->MPI_TAG;
+        status->MPI_ERROR = MPI_SUCCESS;
+    } else {
+        *flag = 0;
+    }
     return MPI_SUCCESS;
 }
 
@@ -88,6 +105,7 @@ EM_JS(void, js_mpi_send_eager, (intptr_t bufPtr, int dest, int tag, int commId, 
 });
 
 int MPI_Send(const void *buf_ptr, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm) {
+    // 現状eager方式のみ実装
     int buf_size = count * mpi_get_size(datatype);
 
     int32_t *ctl_ptr = (int32_t*)malloc(sizeof(int32_t));
@@ -95,19 +113,32 @@ int MPI_Send(const void *buf_ptr, int count, MPI_Datatype datatype, int dest, in
     *ctl_ptr = WAITING; // WAITINGで初期化
 
     js_mpi_send_eager((intptr_t)buf_ptr, dest, tag, comm.commId, buf_size, (intptr_t)(ctl_ptr));
+
     free(ctl_ptr);
     return MPI_SUCCESS;
 }
 
-EM_JS(void, js_mpi_isend_eager, (intptr_t ptr, int dest, int tag, int commId, int bufSize, intptr_t requestPtr), {
-    const requestId = requestPtr; // リクエスト識別子としてポインタを使用
+EM_JS(void, js_mpi_isend_eager, (intptr_t bufPtr, int dest, int tag, int commId, int bufSize, intptr_t requestPtr), {
+    postMessage({
+        type: "mpi-isend-eager",
+        dest,
+        tag,
+        commId,
+        bufSize,
+        bufPtr,
+        requestPtr,
+    });
 });
 
-int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request *request) {
-    // intptr_t ptr = (intptr_t)buf;  // wasm上のアドレスを取得
-    // intptr_t request_ptr = (intptr_t)(request);
-    // int buf_size = count * mpi_get_size(datatype);
-    // js_mpi_isend_eager(ptr, dest, tag, comm.commId, buf_size, request_ptr);
+int MPI_Isend(const void *buf_ptr, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request *request_ptr) {
+    // 現状eager方式のみ実装
+    int buf_size = count * mpi_get_size(datatype);
+
+    // 動的確保ではなく，requestのisCompleteメンバを使う
+    request_ptr->isComplete = WAITING; // WAITINGで初期化
+
+    js_mpi_isend_eager((intptr_t)buf_ptr, dest, tag, comm.commId, buf_size, (intptr_t)(request_ptr));
+
     return MPI_SUCCESS;
 }
 
@@ -149,105 +180,25 @@ int MPI_Recv(void *buf_ptr, int count, MPI_Datatype datatype, int src, int tag, 
     return MPI_SUCCESS;
 }
 
-// EM_JS(void, js_mpi_irecv, (intptr_t bufPtr, int count, int datatypeId, int src, int tag, int commId, intptr_t requestPtr, int bufSize), {
-//     const sab = Module.eagerSab;
+EM_JS(void, js_mpi_irecv, (intptr_t bufPtr, int src, int tag, int commId, intptr_t requestPtr, int bufSize), {
+    postMessage({
+        type: "mpi-irecv",
+        src,
+        tag,
+        commId,
+        bufSize,
+        bufPtr,
+        requestPtr,
+    });
+});
 
-//     const WAITING = 0;
-//     const READY = 1;
+int MPI_Irecv(void *buf_ptr, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Request *request_ptr) {
+    int buf_size = count * mpi_get_size(datatype);
 
-//     const requestId = requestPtr; // リクエスト識別子としてポインタを使用
+    request_ptr->isComplete = WAITING; // WAITINGで初期化
 
-//     postMessage({
-//         type: "mpi-irecv",
-//         src,
-//         tag,
-//         commId,
-//         requestId,
-//     });
+    js_mpi_irecv((intptr_t)buf_ptr, src, tag, comm.commId, (intptr_t)request_ptr, buf_size);
 
-//     console.log("[mpi-irecv] wait start for requestId:", requestId);
-
-//     (async () => {
-//         while (true) {
-//             while (Atomics.load(ctlNonBlockingWorkerView, 0) === WAITING) {
-//                 const result = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, WAITING);
-//                 if (result.async) {
-//                     console.log("[mpi-irecv] 待機中...", requestId);
-//                     await result.value; // WAITINGの間は待機
-//                 }
-//             }
-
-//             // ここに来た時点でFULLになっている
-//             // 自分宛かどうかを確認する
-//             const currentRequestId = Atomics.load(requestIdView, 0);
-//             console.log("[mpi-irecv] currentRequestId:", currentRequestId, " requestId:", requestId);
-//             if (currentRequestId === requestId) {
-//                 break; // 自分宛だった場合ループを抜けて処理を行う
-//             }
-
-//             const result2 = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, READY);
-//             if (result2.async) {
-//                 console.log("[mpi-irecv] 自分宛ではなかったため再待機 waitAsync result:", requestId);
-//                 await result2.value;
-//                 console.log("[mpi-irecv] 再待機から復帰", requestId);
-//             } 
-
-//             // 自分宛ではなかった場合WAITINGに戻さずに再度待機
-//             // while (Atomics.load(ctlNonBlockingWorkerView, 0) === READY) {
-//             //     const result2 = Atomics.waitAsync(ctlNonBlockingWorkerView, 0, READY);
-//             //     if (result2.async) {
-//             //         console.log("[mpi-irecv] 再待機 waitAsync result:", result2);
-//             //         await result2.value; // 誰かがWAITINGにするまでsleep
-//             //         console.log("[mpi-irecv] 再待機から復帰");
-//             //     } 
-//             // }
-//         }
-//         console.log("到達確認1");
-
-//         const len = Atomics.load(lenView, 0);
-//         const realSrc = Atomics.load(metaView, 0);
-//         const realTag = Atomics.load(metaView, 1);
-        
-//         const realLen = Math.min(len, bufSize);
-
-//         // console.log("bufPtr    =", bufPtr);
-//         // console.log("requestPtr=", requestPtr);
-//         // console.log("bufPtr/4  =", bufPtr / 4);
-//         // console.log("requestPtr/4 =", requestPtr / 4);
-
-
-//         // ステータス情報を設定
-//         const base = requestPtr / 4;
-//         if (requestPtr) {
-//             HEAP32[base + 0] = requestId;
-//             HEAP32[base + 1] = 1;
-//             HEAP32[base + 2] = realLen;
-//             HEAP32[base + 3] = realSrc;
-//             HEAP32[base + 4] = realTag;
-//         }
-
-//         console.log("到達確認2");
-
-//         // 受信データをWASMメモリにコピー
-//         HEAPU8.set(dataView.subarray(0, realLen), bufPtr);
-
-//         // 受信完了したらWAITINGに戻してSABが開いたことを通知
-//         Atomics.store(ctlBlockingWorkerView, 0, WAITING);
-//         Atomics.store(ctlNonBlockingWorkerView, 0, WAITING);
-//         Atomics.store(ctlRouterView, 0, WAITING);
-//         // const workerwake = Atomics.notify(ctlNonBlockingWorkerView, 0); // ノンブロッキングwaitを起こす
-//         Atomics.notify(ctlRouterView, 0, 1);
-//         console.log("到達確認3");
-//     })();
-// });
-
-int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int src, int tag, MPI_Comm comm, MPI_Request *request) {
-    // intptr_t buf_ptr = (intptr_t)(buf);  // wasm上のアドレスを取得
-    // intptr_t request_ptr = (intptr_t)(request);
-    // int buf_size = count * mpi_get_size(datatype);
-    // printf("MPI_Irecv called with buf_ptr: %ld, count: %d, datatype: %d, src: %d, tag: %d, commId: %d, request_ptr: %ld, buf_size: %d\n",
-    //        buf_ptr, count, datatype, src, tag, comm.commId, request_ptr, buf_size);
-    // js_mpi_irecv(buf_ptr, count, datatype, src, tag, comm.commId, request_ptr, buf_size);
     return MPI_SUCCESS;
 }
 

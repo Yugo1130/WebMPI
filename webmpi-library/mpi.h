@@ -5,6 +5,9 @@
 extern "C" {
 #endif
 
+const int WAITING = 0;
+const int READY = 1;
+
 typedef struct _MPI_Status {
     int bytes;
     int MPI_SOURCE;
@@ -14,7 +17,7 @@ typedef struct _MPI_Status {
 
 typedef struct _MPI_Request {
     int requestId; // リクエストの識別子
-    int isComplete; // 完了フラグ
+    int isComplete; // 完了フラグ（0: 未完了, 1: 完了）
     int bytes;
     int MPI_SOURCE;
     int MPI_TAG;
@@ -122,6 +125,8 @@ int MPI_Send(const void *buf, int count, MPI_Datatype datatype, int dest, int ta
 int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int tag, MPI_Comm comm, MPI_Request *request);
 int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Status *status);
 int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Request *request);
+int MPI_Wait(MPI_Request *request, MPI_Status *status);
+int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status);
 int MPI_Finalize(void);
 int MPI_Get_count(MPI_Status *status, MPI_Datatype datatype, int *count);
 
