@@ -16,8 +16,6 @@ export const ANY_SRC = -1;
 export const ANY_TAG = -1;
 
 function recvMatches(sendSrc, sendTag, sendCommId, expectedQueue) {
-    console.log("recvMatches unexpectedQueue:", unexpectedQueue);
-    console.log("recvMatches expectedQueue:", expectedQueue);
     for (let i = 0; i < expectedQueue.length; i++) {
         const recv = expectedQueue[i];
         const srcMatch = (recv.src === ANY_SRC) || (sendSrc === recv.src);
@@ -31,8 +29,6 @@ function recvMatches(sendSrc, sendTag, sendCommId, expectedQueue) {
 }
 
 function sendMatches(recvSrc, recvTag, recvCommId, unexpectedQueue) {
-    console.log("sendMatches unexpectedQueue:", unexpectedQueue);
-    console.log("sendMatches expectedQueue:", expectedQueue);
     for (let i = 0; i < unexpectedQueue.length; i++) {
         const send = unexpectedQueue[i];
         if (send.matched) continue; // 既にマッチ済みの場合はスキップ
@@ -46,11 +42,10 @@ function sendMatches(recvSrc, recvTag, recvCommId, unexpectedQueue) {
     return -1; // マッチなし
 }
 
-function transferDataToServer(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr) {
+function transferDataToServer(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr = undefined , srcRequestPtr = undefined) {
     const destClientId = rankToClientId[dest];
     const srcSab = rankToSab[src]; // 送信元rankのSAB
     const payload = new Uint8Array(srcSab, srcBufPtr, srcBufSize); // 送信元バッファビュー
-    const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
 
     transferSocket.send(JSON.stringify({
         type: "mpi-message-to-server",
@@ -63,12 +58,25 @@ function transferDataToServer(src, dest, tag, commId, srcBufSize, srcBufPtr, src
         destClientId,
     }));
 
-    Atomics.store(srcCtlView, 0, READY);
-    Atomics.notify(srcCtlView, 0, 1);
+    if (srcCtlPtr !== undefined) { // Sendの場合
+        if(srcCtlPtr === 0) {
+            console.error("Error: srcCtlPtr is 0");
+        }
+        const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
+        Atomics.store(srcCtlView, 0, READY);
+        Atomics.notify(srcCtlView, 0, 1);
+    } else if (srcRequestPtr !== undefined) { // Isendの場合
+        if(srcRequestPtr === 0) {
+            console.error("Error: srcRequestPtr is 0");
+        }
+        const srcRequestView = new Int32Array(srcSab, srcRequestPtr, 5); // リクエストビュー
+        srcRequestView.set([srcRequestView[0], READY, length, src, tag]);
+        Atomics.notify(srcRequestView, 1, 1);
+    }
 }
 
 // recvが先に出ていて同一client内で完結する場合
-function copyDataBetweenLocalWorkers(src, tag, srcBufSize, srcBufPtr, srcCtlPtr, dest, destBufSize, destBufPtr, destCtlPtr, destStatusPtr = undefined, destRequestPtr = undefined) {
+function copyDataBetweenLocalWorkers(src, tag, srcBufSize, srcBufPtr, srcCtlPtr = undefined, srcRequestPtr = undefined, dest, destBufSize, destBufPtr, destCtlPtr = undefined, destStatusPtr = undefined, destRequestPtr = undefined) {
     const srcSab = rankToSab[src]; // 送信元rankのSAB
     const destSab = rankToSab[dest]; // 送信先rankのSAB
     
@@ -77,27 +85,35 @@ function copyDataBetweenLocalWorkers(src, tag, srcBufSize, srcBufPtr, srcCtlPtr,
     const length = Math.min(srcBufSize, destBufSize);
 
     destBufView.set(srcBufView.subarray(0, length), 0); // 送信元SABから送信先SABへコピー
-    
-    const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
-    Atomics.store(srcCtlView, 0, READY);
-    Atomics.notify(srcCtlView, 0, 1);
-    
-    if (destRequestPtr !== undefined) {
-        const requestView = new Int32Array(destSab, destRequestPtr, 5); // リクエストビュー
-        requestView.set([requestView[0], 1, length, src, tag]);
+
+    // コピーを作成して送信バッファは利用可能となったため，READYに設定して通知
+    if (srcCtlPtr !== undefined) { // Sendの場合
+        const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
+        Atomics.store(srcCtlView, 0, READY);
+        Atomics.notify(srcCtlView, 0, 1);
+    } else if (srcRequestPtr !== undefined) { // Isendの場合
+        const srcRequestView = new Int32Array(srcSab, srcRequestPtr, 5); // リクエストビュー
+        srcRequestView.set([srcRequestView[0], READY, length, src, tag]);
+        Atomics.notify(srcRequestView, 1, 1);
     }
-    if (destStatusPtr !== undefined) {
+    
+    // 受信側のステータス・制御ビューの更新および通知
+    if (destStatusPtr !== undefined && destCtlPtr !== undefined) { // Recvの場合
         const statusView = new Int32Array(destSab, destStatusPtr, 4); // ステータスビュー
         statusView.set([length, src, tag, 0]); 
+
+        const destCtlView = new Int32Array(destSab, destCtlPtr, 1); // 送信先制御ビュー
+        Atomics.store(destCtlView, 0, READY);
+        Atomics.notify(destCtlView, 0, 1);
+    } else if (destRequestPtr !== undefined) { // Irecvの場合
+        const destRequestView = new Int32Array(destSab, destRequestPtr, 5); // リクエストビュー
+        destRequestView.set([destRequestView[0], READY, length, src, tag]);
+        Atomics.notify(destRequestView, 1, 1);
     }
-    
-    const destCtlView = new Int32Array(destSab, destCtlPtr, 1); // 送信先制御ビュー
-    Atomics.store(destCtlView, 0, READY);
-    Atomics.notify(destCtlView, 0, 1);
 }
 
 // sendが先に出ていて同一client内で完結する場合
-function copyPayloadTodestBuf(src, tag, payload, dest, destBufSize, destBufPtr, destCtlPtr, destStatusPtr = undefined, destRequestPtr = undefined) {
+function copyPayloadTodestBuf(src, tag, payload, dest, destBufSize, destBufPtr, destCtlPtr = undefined, destStatusPtr = undefined, destRequestPtr = undefined) {
     const destSab = rankToSab[dest]; // 送信先rankのSAB
     
     const destBufView = new Uint8Array(destSab, destBufPtr, destBufSize); // 送信先バッファビュー
@@ -105,40 +121,40 @@ function copyPayloadTodestBuf(src, tag, payload, dest, destBufSize, destBufPtr, 
     
     destBufView.set(payload.subarray(0, length), 0);
 
-    if (destRequestPtr !== undefined) {
-        const requestView = new Int32Array(destSab, destRequestPtr, 5); // リクエストビュー
-        requestView.set([requestView[0], 1, length, src, tag]);
-    }
-    if (destStatusPtr !== undefined) {
+    if (destStatusPtr !== undefined && destCtlPtr !== undefined) { // Recvの場合
         const statusView = new Int32Array(destSab, destStatusPtr, 4); // ステータスビュー
         statusView.set([length, src, tag, 0]); 
+
+        const destCtlView = new Int32Array(destSab, destCtlPtr, 1); // 送信先制御ビュー
+        Atomics.store(destCtlView, 0, READY);
+        Atomics.notify(destCtlView, 0, 1);
+    } else if (destRequestPtr !== undefined) {
+        const destRequestView = new Int32Array(destSab, destRequestPtr, 5); // リクエストビュー
+        destRequestView.set([destRequestView[0], READY, length, src, tag]);
+        Atomics.notify(destRequestView, 1, 1);
     }
-    
-    const destCtlView = new Int32Array(destSab, destCtlPtr, 1); // 送信先制御ビュー
-    Atomics.store(destCtlView, 0, READY);
-    Atomics.notify(destCtlView, 0, 1);
 }
 
-export function sendMpiMessage(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr) {
+export function sendMpiMessage(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr = undefined, srcRequestPtr = undefined) {
     const srcClientId = rankToClientId[src];
     const destClientId = rankToClientId[dest];
     // 送信元と送信先が同一clientの場合
     if (srcClientId === destClientId) {
         let index = recvMatches(src, tag, commId, expectedQueue);
-        console.log("[sendMpiMessage] matched data at index:", index);
         if (index >= 0) {
             // const requestId = expectedQueue[index].requestId ?? undefined;
             copyDataBetweenLocalWorkers(src, 
                                         tag, 
                                         srcBufSize, 
                                         srcBufPtr, 
-                                        srcCtlPtr, 
+                                        srcCtlPtr, // Send用
+                                        srcRequestPtr, // Isend用（srcCtlPtrの機能をメンバ変数で代替）
                                         dest, 
                                         expectedQueue[index].bufSize, 
                                         expectedQueue[index].bufPtr, 
-                                        expectedQueue[index].ctlPtr, 
-                                        expectedQueue[index].destStatusPtr, 
-                                        expectedQueue[index].destRequestPtr);
+                                        expectedQueue[index].ctlPtr, // Recv用
+                                        expectedQueue[index].destStatusPtr, // Recv用
+                                        expectedQueue[index].destRequestPtr); // Irecv用
             // expectedQueueから該当エントリを削除
             expectedQueue.splice(index, 1);
         } else {
@@ -146,13 +162,19 @@ export function sendMpiMessage(src, dest, tag, commId, srcBufSize, srcBufPtr, sr
             const srcSab = rankToSab[src]; // 送信元rankのSAB
 
             const srcBufView = new Uint8Array(srcSab, srcBufPtr, srcBufSize); // 送信元バッファビュー
-            const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
 
             const payload = new Uint8Array(srcBufView); // コピーを作成（コピーなしではSABが共有されてしまう）
 
             // コピーを作成して送信バッファは利用可能となったため，READYに設定して通知
-            Atomics.store(srcCtlView, 0, READY);
-            Atomics.notify(srcCtlView, 0, 1);
+            if (srcCtlPtr !== undefined) { // Sendの場合
+                const srcCtlView = new Int32Array(srcSab, srcCtlPtr, 1); // 送信元制御ビュー
+                Atomics.store(srcCtlView, 0, READY);
+                Atomics.notify(srcCtlView, 0, 1);
+            } else if (srcRequestPtr !== undefined) { // Isendの場合
+                const srcRequestView = new Int32Array(srcSab, srcRequestPtr, 5); // リクエストビュー
+                srcRequestView.set([srcRequestView[0], READY, length, src, tag]);
+                Atomics.notify(srcRequestView, 1, 1);
+            }
 
             unexpectedQueue.push({
                 src,
@@ -160,18 +182,16 @@ export function sendMpiMessage(src, dest, tag, commId, srcBufSize, srcBufPtr, sr
                 tag,
                 commId,
                 payload,
-                ctlPtr : srcCtlPtr,
             });
         }
     } else {
         // 送信先が異なるclientの場合はサーバ経由で送信
-        transferDataToServer(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr);
+        transferDataToServer(src, dest, tag, commId, srcBufSize, srcBufPtr, srcCtlPtr, srcRequestPtr);
     }
 }
 
 export async function recvMpiMessage(src, dest, tag, commId, destBufSize, destBufPtr, destCtlPtr, destStatusPtr = undefined, destRequestPtr = undefined) {
     let index = sendMatches(src, tag, commId, unexpectedQueue);
-    console.log("[recvMpiMessage] matched data at index:", index);
     if (index >= 0) {
         // unexpectedQueueから該当エントリを論理削除（ここで消さないのはpayloadのコピーを避けるため） 
         unexpectedQueue[index].matched = true;
@@ -229,7 +249,6 @@ transferSocket.onmessage = (event) => {
                 tag: data.tag,
                 commId: data.commId,
                 payload,
-                ctlPtr : data.ctlPtr,
             });
         }  
     }

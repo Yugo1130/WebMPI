@@ -1,6 +1,6 @@
 onmessage = (e) => {
     const type = e.data.type;
-    if (type == "init") {
+    if (type == "init") { // from router/client.js
         self.Module = {
             args: e.data.args, // mainに渡す引数（argc, argv）
             rank: e.data.rank,
@@ -15,12 +15,12 @@ onmessage = (e) => {
             },
             // print: (text) => postMessage(text), // printfの出力先
             // printErr: (text) => postMessage("[ERR] " + text), //fprintfの出力先
-            print: (text) => postMessage({
+            print: (text) => postMessage({ // to router/client.js
                 // printfの出力先
                 type: "standard-output",
                 text,
             }), 
-            printErr: (text) => postMessage({
+            printErr: (text) => postMessage({ // to router/client.js
                 //fprintfの出力先
                 type: "standard-error-output",
                 text,
@@ -30,7 +30,7 @@ onmessage = (e) => {
                 // SABとして確保したWASMメモリを取得
                 const wasmmemorySab = self.Module.wasmMemory.buffer;
 
-                postMessage({
+                postMessage({ // to router/client.js
                     type: "wasm-memory-sab-ready",
                     wasmmemorySab, // SABの参照を送信
                 });

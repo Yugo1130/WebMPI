@@ -43,22 +43,25 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
                     // メインスレッドからも参照しやすいようにworkerオブジェクトに紐づける
                     worker.wasmmemorySab = e.data.wasmmemorySab;
                     break;
-                case "standard-output":
+                case "standard-output": // from worker/worker.js
                     output.textContent += `[rank ${rank}]: ${e.data.text}\n`;
                     break;
-                case "standard-error-output":
+                case "standard-error-output": // from worker/worker.js
                     output.textContent += `[ERR] [rank ${rank}]: ${e.data}\n`;
                     break;
-                case "mpi-send-eager":
-                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr);
+                case "mpi-send-eager": // from mpi.c
+                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr, undefined);
                     break;
-                case "mpi-recv":
+                case "mpi-isend-eager": // from mpi.c
+                    sendMpiMessage(rank, e.data.dest, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, undefined, e.data.requestPtr);
+                    break;
+                case "mpi-recv": // from mpi.c
                     recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr, e.data.statusPtr, undefined);
                     break;
-                case "mpi-irecv":
-                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, e.data.ctlPtr, undefined, e.data.requestPtr);
+                case "mpi-irecv": // from mpi.c
+                    recvMpiMessage(e.data.src, rank, e.data.tag, e.data.commId, e.data.bufSize, e.data.bufPtr, undefined, undefined, e.data.requestPtr);
                     break;
-                case "mpi-finalize":
+                case "mpi-finalize": // from mpi.c
                     // workerの終了
                     output_info.textContent += `[rank ${rank}]: Finalized.\n`;
                     worker.terminate();
@@ -67,7 +70,7 @@ export function handleSpawnInfo(data, clientId, output, output_info) {
         };
 
         // initメッセージで引数，割り当てられたrank，sizeをworkerに送信
-        worker.postMessage({
+        worker.postMessage({ // to worker/worker.js
             type: "init",
             args,
             rank,
