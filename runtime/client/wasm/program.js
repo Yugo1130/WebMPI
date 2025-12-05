@@ -820,7 +820,7 @@ function createExportWrapper(name, nargs) {
 var wasmBinaryFile;
 
 function findWasmBinary() {
-    return locateFile('sample.wasm');
+    return locateFile('program.wasm');
 }
 
 function getBinarySync(file) {
@@ -1911,8 +1911,6 @@ function assignWasmImports() {
     js_mpi_irecv,
     /** @export */
     js_mpi_isend_eager,
-    /** @export */
-    js_mpi_wait,
     /** @export */
     memory: wasmMemory
   };

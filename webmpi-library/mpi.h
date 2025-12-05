@@ -126,6 +126,7 @@ int MPI_Isend(const void *buf, int count, MPI_Datatype datatype, int dest, int t
 int MPI_Recv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Status *status);
 int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Request *request);
 int MPI_Wait(MPI_Request *request, MPI_Status *status);
+int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status);
 int MPI_Finalize(void);
 int MPI_Get_count(MPI_Status *status, MPI_Datatype datatype, int *count);
 

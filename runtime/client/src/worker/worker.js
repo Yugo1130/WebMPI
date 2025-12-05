@@ -7,8 +7,7 @@ onmessage = (e) => {
             size: e.data.size,            
             locateFile: (path) => {
                 if (path.endsWith(".wasm")) {
-                    // sample.js と sample.wasm は /runtime/client/wasm/build/ にある
-                    // REVIEW wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．しかし本当に動いてるか不明．
+                    // wasmをキャッシュしてしまうことがあるので，キャッシュバスターを導入．
                     return "/wasm/" + path + "?v=" + Date.now();
                 }
                 return path;
@@ -42,6 +41,6 @@ onmessage = (e) => {
 
         // em++で生成したJSランタイム
         // 初期化処理やロード処理を行う．
-        importScripts("/wasm/sample.js?v=" + Date.now());
+        importScripts("/wasm/program.js?v=" + Date.now());
     }
 };

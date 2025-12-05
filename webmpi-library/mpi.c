@@ -69,6 +69,20 @@ int MPI_Wait(MPI_Request *request, MPI_Status *status) {
     return MPI_SUCCESS;
 }
 
+int MPI_Test(MPI_Request *request, int *flag, MPI_Status *status) {
+    if (request->isComplete == READY) {
+        *flag = 1;
+        // ステータス情報をコピー
+        status->bytes = request->bytes;
+        status->MPI_SOURCE = request->MPI_SOURCE;
+        status->MPI_TAG = request->MPI_TAG;
+        status->MPI_ERROR = MPI_SUCCESS;
+    } else {
+        *flag = 0;
+    }
+    return MPI_SUCCESS;
+}
+
 EM_JS(void, js_mpi_send_eager, (intptr_t bufPtr, int dest, int tag, int commId, int bufSize, intptr_t ctlPtr), {
     postMessage({
         type: "mpi-send-eager",

@@ -11,6 +11,7 @@ int main(int argc, char *argv[]){
     MPI_Request request[size-1][4];
     printf("Hello from rank %d, size: %d\n", rank, size);
     if(rank == 0){
+        printf("run MPI_Wait version\n");
         int aa[size-1], bb[size-1], cc[size-1], dd[size-1];
         // sleep(1);
         for(int i = 1; i < size; i++){
